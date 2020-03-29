@@ -1,4 +1,4 @@
-workspace "pbrtt"
+workspace "pbrtrr"
 	architecture "x64"
     startproject "pbrtrr"
 
@@ -20,10 +20,8 @@ project "pbrtrr"
 
     files { "./src/**.h", "./src/**.cpp" }
     links { "d3dcompiler", "dxguid", "d3d12", "dxgi" }
-
-	filter "system:windows"
-        defines { "_CRT_SECURE_NO_WARNINGS", "WIN32", "_WINDOWS" }
-		systemversion "latest"
+    defines { "_CRT_SECURE_NO_WARNINGS", "WIN32", "_WINDOWS" }
+    systemversion "latest"
 
     filter "configurations:Debug"
         defines { "_DEBUG", "DEBUG" }
