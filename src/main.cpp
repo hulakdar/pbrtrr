@@ -9,12 +9,11 @@
 #include <d3dcompiler.h>
 #include <DirectXMath.h>
 #include "external/d3dx12.h"
-#include "Util.h"
 
-// Window callback function.
-LRESULT CALLBACK WindowProcedure(HWND, UINT, WPARAM, LPARAM) {
-	return NULL;
-}
+#include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
+
+#include "Util.h"
 
 bool CheckTearingSupport()
 {
@@ -97,25 +96,6 @@ void Flush(Ptr<ID3D12CommandQueue> commandQueue, Ptr<ID3D12Fence> fence, uint64_
     WaitForFenceValue(fence, fenceValueForSignal, fenceEvent);
 }
 
-
-LRESULT WindowCallback(HWND hWnd, UINT message, WPARAM wparam, LPARAM lparam)
-{
-	switch (message)
-	{
-	case WM_SYSKEYDOWN:
-	case WM_KEYDOWN:
-		if (wparam == VK_ESCAPE)
-		{
-			::PostQuitMessage(0);
-			break;
-		}
-	default:
-		return DefWindowProc(hWnd, message, wparam, lparam);
-	}
-	return 0;
-}
-
-
 int APIENTRY WinMain(HINSTANCE hInstance,
                      HINSTANCE ,
                      LPSTR     ,
@@ -123,56 +103,17 @@ int APIENTRY WinMain(HINSTANCE hInstance,
 {
 	EnableDebugLayer();
 
-	const TCHAR Name[] = L"pprtrr";
-
-	{
-		WNDCLASS WindowClass = { 0 };
-
-		WindowClass.style = CS_HREDRAW | CS_VREDRAW;
-		WindowClass.lpfnWndProc = &WindowCallback;
-		WindowClass.cbClsExtra = 0;
-		WindowClass.cbWndExtra = 0;
-		WindowClass.hInstance = hInstance;
-		WindowClass.hIcon = ::LoadIcon(hInstance, IDI_WINLOGO);
-		WindowClass.hCursor = ::LoadCursor(NULL, IDC_ARROW);
-		WindowClass.hbrBackground = 0;// (HBRUSH)(COLOR_WINDOW + 1);
-		WindowClass.lpszMenuName = NULL;
-		WindowClass.lpszClassName = Name;
- 
-		static ATOM atom = ::RegisterClass(&WindowClass);
-		assert(atom > 0);
-	}
-
 	uint32_t ClientWidth = 1280/2;
 	uint32_t ClientHeight = 720/2;
 
+	assert(glfwInit());
+
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+	
+	GLFWwindow *Window = glfwCreateWindow(ClientWidth, ClientHeight, "pbrtrr", nullptr, nullptr);
+
 	// Window handle.
-	HWND hWnd;
-	{
-		int ScreenWidth = ::GetSystemMetrics(SM_CXSCREEN);
-		int ScreenHeight = ::GetSystemMetrics(SM_CYSCREEN);
-	 
-		RECT WindowRect = { 0, 0, static_cast<LONG>(ClientWidth), static_cast<LONG>(ClientHeight) };
-		::AdjustWindowRect(&WindowRect, WS_OVERLAPPEDWINDOW, FALSE);
-	 
-		int WindowWidth = WindowRect.right - WindowRect.left;
-		int WindowHeight = WindowRect.bottom - WindowRect.top;
-
-		Print("ScreenSize:", ScreenWidth, ScreenHeight);
-
-		hWnd = ::CreateWindow(
-			Name, Name,
-			WS_OVERLAPPEDWINDOW,
-			CW_USEDEFAULT, CW_USEDEFAULT,
-			WindowWidth, WindowHeight,
-			NULL,       // Parent window    
-			NULL,       // Menu
-			hInstance,  // Instance handle
-			NULL        // Additional application data
-		);
-
-		assert(hWnd);
-	}
+	HWND hWnd = glfwGetWin32Window(Window);
 
 	Ptr<IDXGIAdapter4> Adapter;
 	{
@@ -371,21 +312,19 @@ int APIENTRY WinMain(HINSTANCE hInstance,
 
 	WaitForFenceValue(Fence, FrameFenceValues[CurrentBackBufferIndex], FenceEvent);
 
-	//Show the window
-	ShowWindow(hWnd, nCmdShow);
-
     //Main message loop
-	MSG msg = { 0 };
-    while(msg.message != WM_QUIT)
+    while(!glfwWindowShouldClose(Window))
 	{
-		if (PeekMessage(&msg, hWnd, 0, 0, PM_REMOVE))
+		glfwPollEvents();
+		if (glfwGetKey(Window, GLFW_KEY_SPACE) == GLFW_PRESS)
 		{
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);
+			glfwSetWindowShouldClose(Window, GLFW_TRUE);
 		}
     }
 	// Make sure the command queue has finished all commands before closing.
     Flush(CommandQueue, Fence, FenceValue, FenceEvent);
  
     ::CloseHandle(FenceEvent);
+
+	glfwTerminate();
 }

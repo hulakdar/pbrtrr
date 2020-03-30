@@ -7,20 +7,30 @@ workspace "pbrtrr"
 		"Debug",
 		"Development",
 		"Release"
-	}
+    }
+    
 
 project "pbrtrr"
     kind "WindowedApp"
     language "C++"
-	cppdialect "C++17"
+	cppdialect "C++latest"
     location "."
     warnings "Extra"
-    objdir "./build/intermidiate"
+    objdir "./bin-int"
     targetdir ("./bin")
 
-    files { "./src/**.h", "./src/**.cpp" }
-    links { "d3dcompiler", "dxguid", "d3d12", "dxgi" }
-    defines { "_CRT_SECURE_NO_WARNINGS", "WIN32", "_WINDOWS" }
+if _ACTION == "vs2017" then
+    libdirs {"./thirdparty/glfw/lib-vc2017"}
+else
+    libdirs {"./thirdparty/glfw/lib-vc2019"}
+end
+
+    files { "./src/**.h",   "./src/**.cpp",
+            "./src/**.hpp", "./src/**.tpp" }
+
+    links { "d3dcompiler", "dxguid", "d3d12", "dxgi", "glfw3" }
+    includedirs { "./thirdparty/glfw/include" }
+    defines { "_CRT_SECURE_NO_WARNINGS", "WIN32", "_WINDOWS", "GLFW_EXPOSE_NATIVE_WIN32" }
     systemversion "latest"
 
     filter "configurations:Debug"
