@@ -316,7 +316,7 @@ int APIENTRY WinMain(HINSTANCE hInstance,
     while(!glfwWindowShouldClose(Window))
 	{
 		glfwPollEvents();
-		if (glfwGetKey(Window, GLFW_KEY_SPACE) == GLFW_PRESS)
+		if (glfwGetKey(Window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
 		{
 			glfwSetWindowShouldClose(Window, GLFW_TRUE);
 		}
