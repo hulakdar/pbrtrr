@@ -11,9 +11,16 @@ workspace "pbrtrr"
     
 
 project "pbrtrr"
+if _OPTIONS["SHIPPING"] == "1" then
     kind "WindowedApp"
+    defines { "SHIPPING" }
+else
+    kind "ConsoleApp"
+end
+    vectorextensions "AVX2"
+    floatingpoint "Fast"
     language "C++"
-	cppdialect "C++latest"
+	cppdialect "C++17"
     location "."
     warnings "Extra"
     objdir "./bin-int"
@@ -25,11 +32,30 @@ else
     libdirs {"./thirdparty/glfw/lib-vc2019"}
 end
 
+    libdirs {
+        "./thirdparty/EASTL",
+        "./thirdparty/DirectXTK12"
+    }
+
     files { "./src/**.h",   "./src/**.cpp",
             "./src/**.hpp", "./src/**.tpp" }
 
-    links { "d3dcompiler", "dxguid", "d3d12", "dxgi", "glfw3" }
-    includedirs { "./thirdparty/glfw/include" }
+    links {
+        "d3dcompiler",
+        "dxguid",
+        "d3d12",
+        "dxgi",
+        -- thirdparty
+        "DirectXTK12",
+        "EASTL",
+        "glfw3"
+    }
+    includedirs {   
+        "./src/",
+        "./thirdparty/glfw/include",
+        "./thirdparty/DirectXTK12/include",
+        "./thirdparty/EASTL/include"
+    }
     defines { "_CRT_SECURE_NO_WARNINGS", "WIN32", "_WINDOWS", "GLFW_EXPOSE_NATIVE_WIN32" }
     systemversion "latest"
 
