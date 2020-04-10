@@ -45,6 +45,13 @@ int main(void)
 	Ptr<ID3D12RootSignature> RootSignature;
 	Ptr<ID3D12PipelineState> PipelineState;
 
+	{
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC Desc;
+		Desc.BlendState = 
+
+		Device.Get()->CreateGraphicsPipelineState(&Desc, IID_PPV_ARGS(&PipelineState));
+	}
+
 	float FoV;
     Matrix ModelMatrix;
     Matrix ViewMatrix;

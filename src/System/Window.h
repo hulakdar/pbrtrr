@@ -30,10 +30,10 @@ public:
 		}
 	}
 
-	IVector2	Size{ 1280, 720 };
+	IVector2	Size{ 720, 720 };
 	 
-	D3D12_VIEWPORT	Viewport{ 0.f, 0.f, (float)Size.x, (float)Size.y, 0.f, 1.f };
-	D3D12_RECT		ScissorRect{ 0, 0, LONG_MAX, LONG_MAX };
+	CD3DX12_VIEWPORT	Viewport = CD3DX12_VIEWPORT(0.f, 0.f, (float)Size.x, (float)Size.y);
+	CD3DX12_RECT		ScissorRect = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
 	GLFWwindow *Handle = nullptr;
 	HWND GetHWND() { return glfwGetWin32Window(Handle); }
 };
