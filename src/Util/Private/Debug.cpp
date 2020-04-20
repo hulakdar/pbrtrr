@@ -1,5 +1,5 @@
-#include "Debug.h"
-#include "Util.h"
+#include "Util/Debug.h"
+#include "Util/Util.h"
 #include "external/d3dx12.h"
 
 #include <iostream>
@@ -17,7 +17,7 @@ void EnableDebugLayer()
 	std::wcout.rdbuf(&DebugStreamW::Instance);
 
 	// d3d12 debug layer
-    Ptr<ID3D12Debug> debugInterface;
+    ComPtr<ID3D12Debug> debugInterface;
 	auto Result = D3D12GetDebugInterface(IID_PPV_ARGS(&debugInterface));
 	assert(SUCCEEDED(Result));
     debugInterface->EnableDebugLayer();

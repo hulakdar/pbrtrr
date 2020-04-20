@@ -1,5 +1,5 @@
-#include "Util.h"
-#include "Debug.h"
+#include "Util/Util.h"
+#include "Util/Debug.h"
 
 #include "external/d3dx12.h"
 #include <iostream>

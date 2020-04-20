@@ -40,6 +40,7 @@ end
     files { "./src/**.h",   "./src/**.cpp",
             "./src/**.hpp", "./src/**.tpp" }
 
+
     links {
         "d3dcompiler",
         "dxguid",
@@ -47,7 +48,6 @@ end
         "dxgi",
         -- thirdparty
         "DirectXTK12",
-        "EASTL",
         "glfw3"
     }
     includedirs {   
@@ -59,18 +59,41 @@ end
     defines { "_CRT_SECURE_NO_WARNINGS", "WIN32", "_WINDOWS", "GLFW_EXPOSE_NATIVE_WIN32" }
     systemversion "latest"
 
+    shadermodel "6.0"
+
+    shaderoptions({"/WX"}) -- Warnings as errors
+
+    local shader_dir = "./content/shaders/"
+    files(shader_dir.."**.hlsl")
+
+    -- HLSL files that don't end with 'Extensions' will be ignored as they will be
+    -- used as includes
+    filter("files:**.hlsl")
+        shaderobjectfileoutput("./content/cooked/".."%{file.basename}"..".cso")
+
+    filter("files:**PS.hlsl")
+        shadertype("Pixel")
+
+    filter("files:**VS.hlsl")
+        shadertype("Vertex")
+
     filter "configurations:Debug"
         defines { "_DEBUG", "DEBUG" }
         targetsuffix ("_Debug")
-		symbols "On"
+        symbols "On"
+        links {
+            "EASTLd"
+        }
 
 	filter "configurations:Development"
 		defines { "DEVELOPMENT" }
         targetsuffix ("_Development")
 		symbols "On"
 		optimize "On"
+        links { "EASTL" }
 
     filter "configurations:Release"
         defines { "NDEBUG", "RELEASE" }
         flags { "LinkTimeOptimization" }
         optimize "On"
+        links { "EASTL" }
