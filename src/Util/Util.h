@@ -16,7 +16,6 @@
 template <typename T, int count>
 int ArraySize(T (&)[count]) { return count; }
 
-void EnableDebugLayer();
 bool IfErrorThenPrint(long Result);
 
 // size custom literal

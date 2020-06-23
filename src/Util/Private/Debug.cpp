@@ -10,7 +10,7 @@
 DebugStream DebugStream::Instance;
 DebugStreamW DebugStreamW::Instance;
 
-void EnableDebugLayer()
+void EnableDebug()
 {
 #ifndef RELEASE
 	// for printing to cout

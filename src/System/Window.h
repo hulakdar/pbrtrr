@@ -23,7 +23,9 @@ public:
 
 		VALIDATE_GLFW_CALL(Handle = glfwCreateWindow(Size.x, Size.y, "pbrtrr", nullptr, nullptr));
 		CHECK(Handle != nullptr, "GLFW failed to create a window.");
-		CHECK(GetHWND() != nullptr, "Couldn't get HWND from GLFW window.");
+
+		VALIDATE_GLFW_CALL(Hwnd = glfwGetWin32Window(Handle));
+		CHECK(Hwnd != nullptr, "Couldn't get HWND from GLFW window.");
 	}
 
 	void Update()
@@ -39,8 +41,8 @@ public:
 	 
 	CD3DX12_VIEWPORT	Viewport = CD3DX12_VIEWPORT(0.f, 0.f, (float)Size.x, (float)Size.y);
 	CD3DX12_RECT		ScissorRect = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
-	GLFWwindow *Handle = nullptr;
-	HWND GetHWND() { return glfwGetWin32Window(Handle); }
+	HWND				Hwnd = nullptr;
+	GLFWwindow			*Handle = nullptr;
 };
 
 }

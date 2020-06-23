@@ -6,6 +6,8 @@
 
 #define DEBUG_BREAK() if (IsDebuggerPresent()) { __debugbreak(); }
 
+void EnableDebug();
+
 class DebugStream : public std::stringbuf
 {
 public:
