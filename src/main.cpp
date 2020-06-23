@@ -18,9 +18,13 @@ int main(void)
 
 	System::CWindow Window;
 
+	Window.Init();
+
     //Main message loop
     while(!glfwWindowShouldClose(Window.Handle))
 	{
+
+		Window.Update();
     }
 
 	glfwTerminate();
