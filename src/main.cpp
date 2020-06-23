@@ -15,7 +15,7 @@ int main(void)
 
 	assert(DirectX::XMVerifyCPUSupport());
 
-	Rendering::CDevice Device;
+	Rendering::CDevice& Device = Rendering::CDevice::Instance;
 	auto WindowSize = Device.Window.Size;
 
 	Device.Init();
@@ -43,12 +43,12 @@ int main(void)
 
 	const WORD Indicies[] =
 	{
-		0, 1, 2, 0, 2, 3,
-		4, 6, 5, 4, 7, 6,
-		4, 5, 1, 4, 1, 0,
-		3, 2, 6, 3, 6, 7,
-		1, 5, 6, 1, 6, 2,
-		4, 0, 3, 4, 3, 7
+		0, 2, 1, 0, 3, 2,
+		4, 5, 6, 4, 6, 7,
+		4, 1, 5, 4, 0, 1,
+		3, 6, 2, 3, 7, 6,
+		1, 6, 5, 1, 2, 6,
+		4, 3, 0, 4, 7, 3
 	};
 
 	auto CmdList = Device.CmdQueue.GetCommandList();
@@ -77,11 +77,11 @@ int main(void)
 	
 	// Load the vertex shader.
 	ComPtr<ID3DBlob> vertexShaderBlob;
-	VALIDATE(D3DReadFileToBlob(L"content/cooked/SimpleVert.cso", &vertexShaderBlob));
+	VALIDATE(D3DReadFileToBlob(L"content/cooked/SimpleVS.cso", &vertexShaderBlob));
 	 
 	// Load the pixel shader.
 	ComPtr<ID3DBlob> pixelShaderBlob;
-	VALIDATE(D3DReadFileToBlob(L"content/cooked/SimplePix.cso", &pixelShaderBlob));
+	VALIDATE(D3DReadFileToBlob(L"content/cooked/SimplePS.cso", &pixelShaderBlob));
 
 
 	D3D12_INPUT_ELEMENT_DESC inputLayout[] = {
@@ -161,11 +161,14 @@ int main(void)
 		optimizedClearValue.Format = DXGI_FORMAT_D32_FLOAT;
 		optimizedClearValue.DepthStencil = { 1.0f, 0 };
 
+		auto HeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+		auto TexDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, WindowSize.x, WindowSize.y,
+			1, 0, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+
 		VALIDATE(Device.Get()->CreateCommittedResource(
-			&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+			&HeapProps,
 			D3D12_HEAP_FLAG_NONE,
-			&CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, WindowSize.x, WindowSize.y,
-				1, 0, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
+			&TexDesc,
 			D3D12_RESOURCE_STATE_DEPTH_WRITE,
 			&optimizedClearValue,
 			IID_PPV_ARGS(&DepthBuffer)
@@ -180,8 +183,6 @@ int main(void)
 
 	Device.CmdQueue.WaitForFenceValue(FenceValue);
 
-	uint64_t frameCount = 0;
-
     //Main message loop
     while(!glfwWindowShouldClose(Device.Window.Handle))
 	{
@@ -190,16 +191,16 @@ int main(void)
 		double TotalTime = glfwGetTime();
 
 		Vector3 rotationAxis(0, 1, 1);
-		Matrix Model = Matrix::CreateFromAxisAngle(rotationAxis, TotalTime);
+		Matrix Model = Matrix::CreateFromAxisAngle(rotationAxis, (float)TotalTime);
 
-		Vector3 eyePosition(0, 0, -10);
+		Vector3 eyePosition(0, 0, -5);
 		Vector3 focusPoint(0, 0, 0);
 		Vector3 upDirection(0, 1, 0);
-		Matrix View= Matrix::CreateLookAt(eyePosition, focusPoint, upDirection);
+		Matrix View = Matrix::CreateLookAt(eyePosition, focusPoint, upDirection);
 
-		float aspectRatio = 1;
+		float aspectRatio = float(WindowSize.x) / float(WindowSize.y);
 		Matrix Projection = Matrix::CreatePerspective(0.2, 0.2, 0.1f, 100.0f);
-		//Projection = Matrix::CreatePerspectiveFieldOfView(1, 1, 0.1, 100.0f);
+		Projection = Matrix::CreatePerspectiveFieldOfView(Math::Radians(90.f), aspectRatio, 0.1, 100.0f);
 
 		CmdList = Device.CmdQueue.GetCommandList();
 
@@ -243,10 +244,11 @@ int main(void)
 			Device.CmdQueue.WaitForFenceValue(FenceValues[currentBackBufferIndex]);
 		}
 
-		frameCount++;
+		Device.FrameCount++;
     }
 
 	Device.CmdQueue.Flush();
 
 	glfwTerminate();
 }
+

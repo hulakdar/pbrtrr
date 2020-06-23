@@ -1,6 +1,9 @@
 #include "Rendering/Device.h"
+#include "Util/Util.h"
 
 namespace Rendering {
+
+CDevice	CDevice::Instance;
 
 void CDevice::Init()
 {
@@ -12,8 +15,11 @@ void CDevice::Init()
 	CurrentBackBufferIndex = SwapChain->GetCurrentBackBufferIndex();
 
 	CheckTearingSupport();
-	RTVDescriptorSize = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-	DSVDescriptorSize = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
+
+	for (int i = 0; i < ArraySize(DescriptorSizes); i++)
+	{
+		DescriptorSizes[i] = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE(i));
+	}
 
 	RTVHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, BufferCount);
 	UpdateRenderTargetViews();
@@ -96,6 +102,8 @@ void CDevice::CreateSwapchain()
 
 	VALIDATE(CreateDXGIFactory2(createFactoryFlags, IID_PPV_ARGS(&dxgiFactory4)));
 
+	VALIDATE(dxgiFactory4->MakeWindowAssociation(Window.GetHWND(), DXGI_MWA_NO_ALT_ENTER));
+
 	DXGI_SWAP_CHAIN_DESC1 swapChainDesc = { 0 };
 	swapChainDesc.Width = Window.Size.x;
 	swapChainDesc.Height = Window.Size.y;
@@ -104,7 +112,7 @@ void CDevice::CreateSwapchain()
 	swapChainDesc.SampleDesc = { 1, 0 };
 	swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 	swapChainDesc.BufferCount = BufferCount;
-	swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+	swapChainDesc.Scaling = DXGI_SCALING_NONE;
 	swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 	swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
 	swapChainDesc.Flags = TearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
@@ -118,10 +126,6 @@ void CDevice::CreateSwapchain()
 		nullptr,
 		&swapChain1)
 	);
-
-	// Disable the Alt+Enter fullscreen toggle feature. Switching to fullscreen
-	// will be handled manually.
-	VALIDATE(dxgiFactory4->MakeWindowAssociation(Window.GetHWND(), DXGI_MWA_NO_ALT_ENTER));
 
 	VALIDATE(swapChain1.As(&SwapChain));
 }
@@ -139,12 +143,12 @@ void CDevice::UpdateRenderTargetViews()
 
 		BackBuffers[i] = backBuffer;
 
-		RTVHandle.Offset(RTVDescriptorSize);
+		RTVHandle.Offset(DescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
 	}
 
 }
 
-ComPtr<ID3D12DescriptorHeap> CDevice::CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE type, uint32_t numDescriptors)
+ComPtr<ID3D12DescriptorHeap> CDevice::CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE type, UINT numDescriptors)
 {
 	D3D12_DESCRIPTOR_HEAP_DESC desc = {};
 	desc.NumDescriptors = numDescriptors;
@@ -162,7 +166,7 @@ D3D12_CPU_DESCRIPTOR_HANDLE CDevice::GetCurrentRTV()
 	return CD3DX12_CPU_DESCRIPTOR_HANDLE(
 		RTVHeap->GetCPUDescriptorHandleForHeapStart(),
 		CurrentBackBufferIndex,
-		RTVDescriptorSize
+		DescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]
 	); 
 }
 
@@ -171,7 +175,7 @@ void CDevice::Present()
 	UINT syncInterval = VSync ? 1 : 0;
 	UINT presentFlags = TearingSupported && !VSync ? DXGI_PRESENT_ALLOW_TEARING : 0;
 	VALIDATE(SwapChain->Present(syncInterval, presentFlags));
-	CurrentBackBufferIndex = SwapChain->GetCurrentBackBufferIndex();
+	CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % BufferCount;
 }
 
 void CDevice::CheckTearingSupport()

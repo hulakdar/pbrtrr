@@ -1,7 +1,10 @@
 #pragma once
 
 #include <sstream>
+#include <iostream>
 #include <windows.h>
+
+#define DEBUG_BREAK() if (IsDebuggerPresent()) { __debugbreak(); }
 
 class DebugStream : public std::stringbuf
 {

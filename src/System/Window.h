@@ -5,7 +5,9 @@
 #include "external/d3dx12.h"
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
-#include <assert.h>
+#include <Util\Util.h>
+
+#define VALIDATE_GLFW_CALL(x) if (!(x)) { const char* Error; glfwGetError(&Error); Print("Error during:", #x, Error); }
 
 namespace System
 {
@@ -15,10 +17,13 @@ class CWindow
 public:
 	void Init()
 	{
-		assert(glfwInit());
+		VALIDATE_GLFW_CALL(glfwInit());
+
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-		Handle = glfwCreateWindow(Size.x, Size.y, "pbrtrr", nullptr, nullptr);
+		VALIDATE_GLFW_CALL(Handle = glfwCreateWindow(Size.x, Size.y, "pbrtrr", nullptr, nullptr));
+		CHECK(Handle != nullptr, "GLFW failed to create a window.");
+		CHECK(GetHWND() != nullptr, "Couldn't get HWND from GLFW window.");
 	}
 
 	void Update()

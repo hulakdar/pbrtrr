@@ -16,6 +16,7 @@ if _OPTIONS["SHIPPING"] == "1" then
     defines { "SHIPPING" }
 else
     kind "ConsoleApp"
+    defines { "EA_DEBUG" }
 end
     vectorextensions "AVX2"
     floatingpoint "Fast"

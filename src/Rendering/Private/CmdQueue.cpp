@@ -1,4 +1,5 @@
 #include "Rendering/CmdQueue.h"
+#include "Util/Util.h"
 
 namespace Rendering
 {
@@ -39,7 +40,7 @@ CCmdList CCmdQueue::GetCommandList()
 
 	if (!ListQueue.empty())
 	{
-		CmdList = ListQueue.front();
+		CmdList = MOVE(ListQueue.front());
 		ListQueue.pop();
 
 		VALIDATE(CmdList.Get()->Reset(CmdAllocator.Get(), nullptr));

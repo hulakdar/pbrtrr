@@ -7,7 +7,7 @@
 #include <system_error>
 #include <dxgi1_6.h>
 
-bool IfErrorThenPrint(HRESULT Result)
+bool IfErrorThenPrint(long Result)
 {
 	if (SUCCEEDED(Result))
 		return true;

@@ -1,7 +1,8 @@
 #pragma once
 
-#include "Util/Util.h"
 #include "Rendering/CmdList.h"
+#include "Containers/Queue.h"
+#include "Containers/ComPtr.h"
 
 #include "external/d3dx12.h"
 #include <stdint.h>
@@ -45,8 +46,8 @@ private:
 		ComPtr<ID3D12CommandAllocator> CmdAllocator;
 	};
 
-	using CmdAllocatorQueue = Queue<CmdAllocatorEntry>;
-	using CmdListQueue = Queue<CCmdList>;
+	using CmdAllocatorQueue = TQueue<CmdAllocatorEntry>;
+	using CmdListQueue = TQueue<CCmdList>;
 
 	CmdAllocatorQueue   AllocatorQueue;
 	CmdListQueue        ListQueue;
