@@ -1,5 +1,6 @@
 #pragma once
 
+#include "external/d3dx12.h"
 #include <SimpleMath.h>
 
 // THIS IS HACK. I KNOW IT.

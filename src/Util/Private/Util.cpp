@@ -1,21 +1,4 @@
-#include "Util/Util.h"
-#include "Util/Debug.h"
-
-#include "external/d3dx12.h"
-#include <iostream>
-#include <assert.h>
-#include <system_error>
-#include <dxgi1_6.h>
-
-bool IfErrorThenPrint(long Result)
-{
-	if (SUCCEEDED(Result))
-		return true;
-
-	std::string ErrorText = std::system_category().message(Result);
-	Print("VALIDATE caught error: ", ErrorText);
-	return false;
-}
+#include <stdint.h>
 
 // for eastl
 // maybe we could write our own custom allocator in future

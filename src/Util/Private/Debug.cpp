@@ -5,24 +5,38 @@
 
 #include <iostream>
 #include <dxgi1_6.h>
+#include <directxmath.h>
 
-// statics
-DebugStream DebugStream::Instance;
-DebugStreamW DebugStreamW::Instance;
-
-void EnableDebug()
-{
-#ifndef RELEASE
-	// for printing to cout
-	std::cout.rdbuf(&DebugStream::Instance);
-	std::wcout.rdbuf(&DebugStreamW::Instance);
-
-	// d3d12 debug layer
+namespace Debug {
+	Scope::Scope()
 	{
-		ComPtr<ID3D12Debug> debugInterface;
-		auto Result = D3D12GetDebugInterface(IID_PPV_ARGS(&debugInterface));
-		CHECK(SUCCEEDED(Result), "DebugInterface not initialized correctly");
-		debugInterface->EnableDebugLayer();
-	}
+		CHECK(DirectX::XMVerifyCPUSupport(), "This CPU does not support DirectXMath (or instruction set selected while compiling)");
+#ifndef RELEASE
+		// for printing to cout
+		std::cout.rdbuf(&mStream);
+		std::wcout.rdbuf(&mWStream);
+
+		// d3d12 debug layer
+		{
+			ComPtr<ID3D12Debug> debugInterface;
+			VALIDATE(D3D12GetDebugInterface(IID_PPV_ARGS(&debugInterface)));
+			debugInterface->EnableDebugLayer();
+		}
 #endif
+	}
+
+	Scope::~Scope()
+	{
+	}
+
+	bool ValidateImpl(long Result)
+	{
+		if (SUCCEEDED(Result))
+			return true;
+
+		std::string ErrorText = std::system_category().message(Result);
+		Debug::Print("VALIDATE caught error: ", ErrorText);
+		return false;
+	}
+
 }
