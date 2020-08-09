@@ -8,7 +8,28 @@ workspace "pbrtrr"
 		"Development",
 		"Release"
     }
+
+outputdir = "Pbrtrr"
+
+filter "configurations:Debug"
+    defines { "_DEBUG", "DEBUG" }
+    targetsuffix ("_Debug")
+    symbols "On"
+
+filter "configurations:Development"
+    defines { "DEVELOPMENT" }
+    targetsuffix ("_Development")
+    symbols "On"
+    optimize "On"
+
+filter "configurations:Release"
+    defines { "NDEBUG", "RELEASE" }
+    flags { "LinkTimeOptimization" }
+    optimize "On"
     
+filter ""
+
+include ("thirdparty/imgui/premake5.lua")
 
 project "pbrtrr"
 if _OPTIONS["SHIPPING"] == "1" then
@@ -16,11 +37,11 @@ if _OPTIONS["SHIPPING"] == "1" then
     defines { "SHIPPING" }
 else
     kind "ConsoleApp"
-    defines { "EA_DEBUG" }
 end
     vectorextensions "AVX2"
     floatingpoint "Fast"
     language "C++"
+    staticruntime "Off"
 	cppdialect "C++17"
     location "."
     warnings "Extra"
@@ -34,13 +55,16 @@ else
 end
 
     libdirs {
+        -- thirdparty
         "./thirdparty/EASTL",
+        "./thirdparty/assimp",
+        "./thirdparty/irrXML",
+        "./thirdparty/zlib",
         "./thirdparty/DirectXTK12"
     }
 
     files { "./src/**.h",   "./src/**.cpp",
             "./src/**.hpp", "./src/**.tpp" }
-
 
     links {
         "d3dcompiler",
@@ -48,16 +72,50 @@ end
         "d3d12",
         "dxgi",
         -- thirdparty
+        "imgui",
+        "irrxml",
         "DirectXTK12",
         "glfw3"
     }
+
     includedirs {   
         "./src/",
         "./thirdparty/glfw/include",
+        "./thirdparty/imgui",
+        "./thirdparty/assimp/include",
+        "./thirdparty/irrXML/include",
         "./thirdparty/DirectXTK12/include",
         "./thirdparty/EASTL/include"
     }
-    defines { "_CRT_SECURE_NO_WARNINGS", "WIN32", "_WINDOWS", "GLFW_EXPOSE_NATIVE_WIN32" }
+
+    defines {
+        "_CRT_SECURE_NO_WARNINGS",
+        "WIN32",
+        "_WINDOWS",
+        "GLFW_EXPOSE_NATIVE_WIN32"
+    }
+
+    filter "configurations:Debug"
+        defines { "EA_DEBUG" }
+        links {
+            "EASTLd",
+            "assimp-vc142-mtd",
+            "libz-staticmtd"
+        }
+
+    filter ""
+    
+    links {
+        "EASTL",
+        "assimp-vc142-mt",
+        "libz-staticmt"
+    }
+
+
+
+
+    --[[ This stuff is just fore reference, it doesn't really work that well
+
     systemversion "latest"
 
     shadermodel "6.0"
@@ -77,24 +135,5 @@ end
 
     filter("files:**VS.hlsl")
         shadertype("Vertex")
-
-    filter "configurations:Debug"
-        defines { "_DEBUG", "DEBUG" }
-        targetsuffix ("_Debug")
-        symbols "On"
-        links {
-            "EASTLd"
-        }
-
-	filter "configurations:Development"
-		defines { "DEVELOPMENT" }
-        targetsuffix ("_Development")
-		symbols "On"
-		optimize "On"
-        links { "EASTL" }
-
-    filter "configurations:Release"
-        defines { "NDEBUG", "RELEASE" }
-        flags { "LinkTimeOptimization" }
-        optimize "On"
-        links { "EASTL" }
+        
+    ]]--

@@ -21,7 +21,7 @@ public:
 
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-		VALIDATE_GLFW_CALL(mHandle = glfwCreateWindow(mSize.x, mSize.y, "pbrtrr", nullptr, nullptr));
+		VALIDATE_GLFW_CALL(mHandle = glfwCreateWindow((int)mSize.x, (int)mSize.y, "pbrtrr", nullptr, nullptr));
 		CHECK(mHandle != nullptr, "GLFW failed to create a window.");
 
 		VALIDATE_GLFW_CALL(mHwnd = glfwGetWin32Window(mHandle));
@@ -37,9 +37,9 @@ public:
 		}
 	}
 
-	IVector2			mSize{ 720, 720 };
+	Vector2				mSize{ 1920, 1080 };
 	 
-	CD3DX12_VIEWPORT	mViewport = CD3DX12_VIEWPORT(0.f, 0.f, (float)mSize.x, (float)mSize.y);
+	CD3DX12_VIEWPORT	mViewport = CD3DX12_VIEWPORT(0.f, 0.f, mSize.x, mSize.y);
 	CD3DX12_RECT		mScissorRect = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
 	HWND				mHwnd = nullptr;
 	GLFWwindow			*mHandle = nullptr;

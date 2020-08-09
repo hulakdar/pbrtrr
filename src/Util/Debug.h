@@ -4,12 +4,35 @@
 #include <iostream>
 #include <windows.h>
 
-#define DEBUG_BREAK() if (IsDebuggerPresent()) { __debugbreak(); }
+#define DEBUG_BREAK() \
+		if (IsDebuggerPresent()) \
+		{ \
+			__debugbreak(); \
+		}
+
 
 #ifndef RELEASE
-# define CHECK(x, msg) if (!(x)) { Debug::Print(msg); DEBUG_BREAK();}
-# define CHECK_RETURN(x, msg, ret) if (!(x)) { Debug::Print(msg); DEBUG_BREAK(); return ret;}
-# define VALIDATE(x) if (!Debug::ValidateImpl(x)) {DEBUG_BREAK();}
+# define CHECK(x, msg) \
+		if (!(x)) \
+		{ \
+			Debug::Print(msg); \
+			DEBUG_BREAK(); \
+		}
+
+# define CHECK_RETURN(x, msg, ret) \
+		if (!(x)) \
+		{ \
+			Debug::Print(msg); \
+			DEBUG_BREAK(); \
+			return ret; \
+		}
+
+# define VALIDATE(x) \
+		if (!Debug::ValidateImpl(x)) \
+		{ \
+			DEBUG_BREAK(); \
+		}
+
 #else
 # define CHECK(x, msg) ((void)(x))
 # define CHECK_RETURN(x, msg, ret) if (!(x)) { return ret; }
