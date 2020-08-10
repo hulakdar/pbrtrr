@@ -48,7 +48,7 @@ int main(void)
 
 	Assimp::Importer Importer;
 
-	const aiScene *Scene = Importer.ReadFile("content/scenes/SunTemple/SunTemple.fbx", 0);
+	const aiScene *Scene = Importer.ReadFile("content/DamagedHelmet.glb", 0);
 	CHECK(Scene != nullptr, "Load failed");
 
 	struct Mesh
@@ -77,7 +77,6 @@ int main(void)
 
 	TArray<Mesh> Meshes;
 	Meshes.reserve(Scene->mNumMeshes);
-
 
 	TQueue<aiNode*> ProcessingQueue;
 	ProcessingQueue.push(Scene->mRootNode);

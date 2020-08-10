@@ -99,6 +99,7 @@ end
         defines { "EA_DEBUG" }
         links {
             "EASTLd",
+            "EAThreadD",
             "assimp-vc142-mtd",
             "libz-staticmtd"
         }
@@ -107,6 +108,7 @@ end
     
     links {
         "EASTL",
+        "EAThread",
         "assimp-vc142-mt",
         "libz-staticmt"
     }
