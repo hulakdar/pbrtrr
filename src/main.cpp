@@ -12,14 +12,119 @@
 #include <assimp/Importer.hpp>
 #include <assimp/mesh.h>
 #include <assimp/scene.h>
+#include <assimp/postprocess.h>
 #include <Containers/Queue.h>
 #include <eathread/eathread.h>
 #include <thread>
+#include <tbb/parallel_for.h>
+#include <tbb/task_group.h>
+#include <atomic>
+
+struct MeshData
+{
+	ComPtr<ID3D12Resource>		VertexBuffer;
+	ComPtr<ID3D12Resource>		IndexBuffer;
+	D3D12_VERTEX_BUFFER_VIEW	VertexBufferView;
+	D3D12_INDEX_BUFFER_VIEW		IndexBufferView;
+};
+
+MeshData AllocateMeshData(aiMesh* Mesh, Render::Context& RenderContext)
+{
+	MeshData Result;
+	CHECK_RETURN(Mesh->HasFaces(), "Mesh without faces?", Result);
+
+	UINT64 VertexSize = sizeof(aiVector3D);
+	UINT64 UVSets = 0;
+	UINT64 VertexColors = 0;
+
+	if (Mesh->HasNormals())
+	{
+		VertexSize += sizeof(aiVector3D);
+	}
+
+	while (Mesh->HasVertexColors(VertexColors))
+	{
+		VertexSize += 4;
+		VertexColors++;
+	}
+
+	while (Mesh->HasTextureCoords(UVSets))
+	{
+		VertexSize += sizeof(float) * Mesh->mNumUVComponents[UVSets];
+		UVSets++;
+	}
+
+	UINT64 VertexBufferSize = VertexSize * Mesh->mNumVertices;
+	UINT IndexBufferSize = Mesh->mNumFaces * 3 * sizeof(unsigned int);
+
+	CHECK(VertexBufferSize != 0, "??");
+	CHECK(IndexBufferSize != 0, "??");
+
+	Result.VertexBuffer = RenderContext.CreateBuffer(VertexBufferSize);
+	Result.IndexBuffer = RenderContext.CreateBuffer(IndexBufferSize);
+
+	Result.VertexBufferView.BufferLocation = Result.VertexBuffer->GetGPUVirtualAddress();
+	Result.VertexBufferView.SizeInBytes = VertexBufferSize;
+	Result.VertexBufferView.StrideInBytes = VertexSize;
+
+	Result.IndexBufferView.BufferLocation = Result.IndexBuffer->GetGPUVirtualAddress();
+	Result.IndexBufferView.SizeInBytes = IndexBufferSize;
+	Result.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+
+	return Result;
+}
+
+void UploadMeshData(unsigned char* CpuPtr, aiMesh* Mesh)
+{
+	for (int i = 0; i < Mesh->mNumVertices; ++i)
+	{
+		unsigned char* Start = CpuPtr;
+		{
+			aiVector3D* Position = (aiVector3D*)CpuPtr;
+			*Position = Mesh->mVertices[i];
+			CpuPtr += sizeof(aiVector3D);
+		}
+
+		if (Mesh->mNormals)
+		{
+			aiVector3D* Normal = (aiVector3D*)CpuPtr;
+			*Normal = Mesh->mNormals[i];
+			CpuPtr += sizeof(aiVector3D);
+		}
+
+		for (int j = 0; Mesh->mColors[j]; ++j)
+		{
+			aiColor4D* Color = (aiColor4D*)CpuPtr;
+			*Color = Mesh->mColors[j][i];
+			CpuPtr += sizeof(aiColor4D);
+		}
+
+		for (int j = 0; Mesh->mTextureCoords[j]; ++j)
+		{
+			if (Mesh->mNumUVComponents[j] == 2)
+			{
+				aiVector2D* UV = (aiVector2D*)CpuPtr;
+				*UV = aiVector2D(Mesh->mTextureCoords[j][i].x, Mesh->mTextureCoords[j][i].y);
+				CpuPtr += sizeof(aiVector2D);
+			}
+			else if (Mesh->mNumUVComponents[j] == 3)
+			{
+				aiVector3D* UV = (aiVector3D*)CpuPtr;
+				*UV = Mesh->mTextureCoords[j][i];
+				CpuPtr += sizeof(aiVector3D);
+			}
+		}
+	}
+
+	for (int i = 0; i < Mesh->mNumFaces; ++i)
+	{
+		::memcpy(CpuPtr, Mesh->mFaces[i].mIndices, 3 * sizeof(unsigned int));
+		CpuPtr += 3 * sizeof(unsigned int);
+	}
+}
 
 int main(void)
 {
-	TArray<Render::TextureData> ImageDatas;
-
 	Debug::Scope DebugScopeObject;
 
 	System::Window Window;
@@ -48,203 +153,231 @@ int main(void)
 
 	Assimp::Importer Importer;
 
-	const aiScene *Scene = Importer.ReadFile("content/DamagedHelmet.glb", 0);
-	CHECK(Scene != nullptr, "Load failed");
+	TArray<MeshData> MeshDatas;
 
-	struct Mesh
+	std::atomic<UINT> Counter(0);
+
+	tbb::task_group TaskGroup;
+	TaskGroup.run([&]()
 	{
-		StringView	Name;
-		Matrix		Transform;
-
-		TArray<unsigned int> MeshIDs;
-	};
-
-	int ThreadCount = EA::Thread::GetProcessorCount();
-
-	auto Worker = [Scene, ThreadCount](int Start) {
-		for (int i = Start; i < Scene->mNumMeshes; i += ThreadCount)
-		{
-			aiMesh* Mesh = Scene->mMeshes[i];
-		}
-	};
-
-	TArray<std::thread> Workers;
-
-	for (int i = 0; i < ThreadCount; ++i)
-	{
-		Workers.emplace_back(Worker, i);
-	}
-
-	TArray<Mesh> Meshes;
-	Meshes.reserve(Scene->mNumMeshes);
-
-	TQueue<aiNode*> ProcessingQueue;
-	ProcessingQueue.push(Scene->mRootNode);
-	while (!ProcessingQueue.empty())
-	{
-		aiNode* Current = ProcessingQueue.front();
-		ProcessingQueue.pop();
-		for (int i = 0; i < Current->mNumChildren; ++i)
-		{
-			ProcessingQueue.push(Current->mChildren[i]);
-		}
-
-		TArray<unsigned int> MeshIDs;
-		MeshIDs.reserve(Current->mNumMeshes);
-		for (int i = 0; i < Current->mNumMeshes; ++i)
-		{
-			unsigned int MeshID = Current->mMeshes[i];
-			MeshIDs.push_back(MeshID);
-		}
-
-		Meshes.push_back(
-			Mesh {
-				StringView(Current->mName.C_Str()),
-				Matrix(Current->mTransformation[0]),
-				MOVE(MeshIDs)
-			}
+		const aiScene* Scene = Importer.ReadFile(
+			"content/SunTemple/SunTemple.fbx",
+			aiProcess_ConvertToLeftHanded | aiProcessPreset_TargetRealtime_MaxQuality
 		);
-	}
 
-	eastl::for_each(Workers.begin(), Workers.end(), [](std::thread& Worker) {
-		Worker.join();
+		CHECK_RETURN(Scene != nullptr, "Load failed", 0);
+
+		ComPtr<ID3D12CommandAllocator> WorkerCommandAllocator = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT);
+		ComPtr<ID3D12GraphicsCommandList> WorkerCommandList = RenderContext.CreateCommandList(WorkerCommandAllocator, D3D12_COMMAND_LIST_TYPE_DIRECT);
+		WorkerCommandList->Reset(WorkerCommandAllocator.Get(), nullptr);
+
+		{
+			TArray<UINT> UploadOffsets;
+			ComPtr<ID3D12Resource> UploadBuffer;
+			{
+				UploadOffsets.resize(Scene->mNumMeshes);
+				MeshDatas.resize(Scene->mNumMeshes);
+				UINT UploadBufferSize = 0;
+				for (unsigned int i = 0; i < Scene->mNumMeshes; ++i)
+				{
+					aiMesh* Mesh = Scene->mMeshes[i];
+					MeshData Tmp = AllocateMeshData(Mesh, RenderContext);
+					UploadOffsets[i] = UploadBufferSize;
+					UploadBufferSize += Tmp.IndexBufferView.SizeInBytes + Tmp.VertexBufferView.SizeInBytes;
+					MeshDatas[i] = Tmp;
+				}
+
+				UploadBuffer = RenderContext.CreateBuffer(UploadBufferSize, true);
+
+				unsigned char* CpuPtr = NULL;
+				UploadBuffer->Map(0, NULL, (void**)&CpuPtr);
+
+				using namespace tbb;
+
+				parallel_for(
+					blocked_range(0U, Scene->mNumMeshes),
+					[Scene, CpuPtr, &UploadOffsets](blocked_range<unsigned int>& range)
+				{
+					for (unsigned int i = range.begin(); i < range.end(); ++i)
+					{
+						aiMesh* Mesh = Scene->mMeshes[i];
+						UploadMeshData(CpuPtr + UploadOffsets[i], Mesh);
+					}
+				}
+				);
+
+				UploadBuffer->Unmap(0, NULL);
+			}
+
+			struct Mesh
+			{
+				String	Name;
+				Matrix	Transform;
+
+				TArray<unsigned int> MeshIDs;
+			};
+
+			TQueue<aiNode*> ProcessingQueue;
+			ProcessingQueue.push(Scene->mRootNode);
+
+			TArray<Mesh> Meshes;
+			while (!ProcessingQueue.empty())
+			{
+				aiNode* Current = ProcessingQueue.front();
+				ProcessingQueue.pop();
+				for (int i = 0; i < Current->mNumChildren; ++i)
+				{
+					ProcessingQueue.push(Current->mChildren[i]);
+				}
+
+				TArray<unsigned int> MeshIDs;
+				MeshIDs.reserve(Current->mNumMeshes);
+				for (int i = 0; i < Current->mNumMeshes; ++i)
+				{
+					unsigned int MeshID = Current->mMeshes[i];
+					MeshIDs.push_back(MeshID);
+				}
+
+				Meshes.push_back(
+					Mesh{
+						String(Current->mName.C_Str()),
+						Matrix(Current->mTransformation[0]),
+						MOVE(MeshIDs)
+					}
+				);
+			}
+
+			TArray<D3D12_RESOURCE_BARRIER> UploadTransitions;
+			for (int i = 0; i < Scene->mNumMeshes; ++i)
+			{
+				MeshData& Data = MeshDatas[i];
+				WorkerCommandList->CopyBufferRegion(Data.VertexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i], Data.VertexBufferView.SizeInBytes);
+				WorkerCommandList->CopyBufferRegion(Data.IndexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i] + Data.VertexBufferView.SizeInBytes, Data.IndexBufferView.SizeInBytes);
+
+				UploadTransitions.push_back(
+					CD3DX12_RESOURCE_BARRIER::Transition(
+						Data.VertexBuffer.Get(),
+						D3D12_RESOURCE_STATE_COPY_DEST,
+						D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER)
+				);
+
+				UploadTransitions.push_back(
+					CD3DX12_RESOURCE_BARRIER::Transition(
+						Data.IndexBuffer.Get(),
+						D3D12_RESOURCE_STATE_COPY_DEST,
+						D3D12_RESOURCE_STATE_INDEX_BUFFER)
+				);
+			}
+
+			WorkerCommandList->Close();
+			RenderContext.Execute(WorkerCommandList.Get());
+
+			VALIDATE(RenderContext.mGraphicsQueue->Signal(FrameFences[0].Get(), 1));
+			ComPtr<ID3D12Fence> WorkerFrameFence = RenderContext.CreateFence();
+			HANDLE WorkerWaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+			WaitForFenceValue(WorkerFrameFence, 1, WorkerWaitEvent);
+			CloseHandle(WorkerWaitEvent);
+			Counter.fetch_add(1);
+		}
+		return 0;
 	});
-	Workers.clear();
 
 	ComPtr<ID3D12RootSignature> RootSignature;
-	{
-		CD3DX12_ROOT_PARAMETER Params[2] = {};
-
-		CD3DX12_DESCRIPTOR_RANGE Range(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
-		Params[0].InitAsDescriptorTable(1, &Range);
-
-		Params[1].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_VERTEX);
-
-		CD3DX12_STATIC_SAMPLER_DESC Samplers[2] = {};
-		Samplers[0].Init(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
-		Samplers[1].Init(1, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
-
-		CD3DX12_ROOT_SIGNATURE_DESC DescRootSignature;
-
-		DescRootSignature.Init(
-			ArraySize(Params), Params,
-			ArraySize(Samplers), Samplers,
-			D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-		);
-
-		ComPtr<ID3DBlob> RootBlob;
-		ComPtr<ID3DBlob> ErrorBlob;
-		VALIDATE_D3D_WITH_BLOB(
-			D3D12SerializeRootSignature(
-				&DescRootSignature,
-				D3D_ROOT_SIGNATURE_VERSION_1,
-				&RootBlob,
-				&ErrorBlob),
-			ErrorBlob
-		);
-
-		RootSignature = RenderContext.CreateRootSignature(RootBlob);
-		RootSignature->SetName(L"RootSignature");
-	}
-
-	struct ConstantBuffer
-	{
-		float Scale;
-	};
-
-	ComPtr<ID3D12Resource> ConstantBuffers[3];
-	for (int i = 0; i < 3; ++i)
-	{
-		ConstantBuffers[i] = RenderContext.CreateConstantBuffer<ConstantBuffer>();
-	}
-
 	ComPtr<ID3D12PipelineState> PSO;
+	Render::TextureData Lena;
+
+	TaskGroup.run([&]()
 	{
-		D3D12_INPUT_ELEMENT_DESC PSOLayout[] =
 		{
-			{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-			{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-		};
+			CD3DX12_ROOT_PARAMETER Params[1] = {};
 
-		ComPtr<ID3DBlob> VertexShader = Render::CompileShader(
-			"content/shaders/Simple.hlsl",
-			"MainVS", "vs_5_1"
-		);
+			CD3DX12_DESCRIPTOR_RANGE Range(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+			Params[0].InitAsDescriptorTable(1, &Range);
 
-		ComPtr<ID3DBlob> PixelShader = Render::CompileShader(
-			"content/shaders/Simple.hlsl",
-			"MainPS", "ps_5_1"
-		);
+			CD3DX12_STATIC_SAMPLER_DESC Samplers[2] = {};
+			Samplers[0].Init(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
+			Samplers[1].Init(1, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
 
-		D3D12_GRAPHICS_PIPELINE_STATE_DESC PSODesc = {};
-		PSODesc.VS.BytecodeLength = VertexShader->GetBufferSize();
-		PSODesc.VS.pShaderBytecode = VertexShader->GetBufferPointer();
-		PSODesc.PS.BytecodeLength = PixelShader->GetBufferSize();
-		PSODesc.PS.pShaderBytecode = PixelShader->GetBufferPointer();
-		PSODesc.pRootSignature = RootSignature.Get();
-		PSODesc.NumRenderTargets = 1;
-		PSODesc.RTVFormats[0] = DXGI_FORMAT_R10G10B10A2_UNORM;
-		PSODesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
-		PSODesc.InputLayout.NumElements = ArraySize(PSOLayout);
-		PSODesc.InputLayout.pInputElementDescs = PSOLayout;
-		PSODesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-		PSODesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-		PSODesc.SampleDesc.Count = 1;
-		PSODesc.DepthStencilState.DepthEnable = false;
-		PSODesc.DepthStencilState.StencilEnable = false;
-		PSODesc.SampleMask = 0xFFFFFFFF;
-		PSODesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+			CD3DX12_ROOT_SIGNATURE_DESC DescRootSignature;
 
-		VALIDATE(RenderContext.mDevice->CreateGraphicsPipelineState(&PSODesc, IID_PPV_ARGS(&PSO)));
-	}
+			DescRootSignature.Init(
+				ArraySize(Params), Params,
+				ArraySize(Samplers), Samplers,
+				D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+			);
 
-	D3D12_VERTEX_BUFFER_VIEW	VertexBufferView;
-	D3D12_INDEX_BUFFER_VIEW		IndexBufferView;
-	ComPtr<ID3D12Resource>	Lena;
-	ComPtr<ID3D12DescriptorHeap> SRVDescriptorHeap = RenderContext.CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
-	{
-		static const float Vertices[] = {
-			-1.f,  1.f, 0.f, 0.f, 0.f,
-			 1.f,  1.f, 0.f, 1.f, 0.f,
-			 1.f, -1.f, 0.f, 1.f, 1.f,
-			-1.f, -1.f, 0.f, 0.f, 1.f,
-		};
+			ComPtr<ID3DBlob> RootBlob;
+			ComPtr<ID3DBlob> ErrorBlob;
+			VALIDATE_D3D_WITH_BLOB(
+				D3D12SerializeRootSignature(
+					&DescRootSignature,
+					D3D_ROOT_SIGNATURE_VERSION_1,
+					&RootBlob,
+					&ErrorBlob),
+				ErrorBlob
+			);
 
-		static const short Indices[] = {
-			0, 1, 2, 0, 2, 3
-		};
-
-		VertexBufferView = RenderContext.CreateVertexBuffer(Vertices, sizeof(Vertices), sizeof(float) * 5);
-		IndexBufferView = RenderContext.CreateIndexBuffer(Indices, sizeof(Indices), DXGI_FORMAT_R16_UINT);
-
-		Render::TextureData LenaTexData;
-		unsigned char *Data = stbi_load("lena_std.tga", &LenaTexData.Size.x, &LenaTexData.Size.y, nullptr, 4);
-		LenaTexData.Data = StringView((char *)Data, LenaTexData.Size.x * LenaTexData.Size.y * 4);
-		LenaTexData.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-
-		Lena = RenderContext.CreateTexture(&LenaTexData, 4);
-		stbi_image_free((stbi_uc*)LenaTexData.Data.data());
-
-		{
-			D3D12_CPU_DESCRIPTOR_HANDLE Handle = SRVDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-
-			{
-				D3D12_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
-				SRVDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-				SRVDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-				SRVDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-				SRVDesc.Texture2D.MipLevels = 1;
-				RenderContext.mDevice->CreateShaderResourceView(Lena.Get(), &SRVDesc, Handle);
-			}
+			RootSignature = RenderContext.CreateRootSignature(RootBlob);
+			RootSignature->SetName(L"RootSignature");
 		}
 
-		RenderContext.InitGUIResources(Gui.FontTexData.Texture);
-	}
+		{
+			D3D12_INPUT_ELEMENT_DESC PSOLayout[] =
+			{
+				{"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+				{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+			};
+
+			ComPtr<ID3DBlob> VertexShader = Render::CompileShader(
+				"content/shaders/Simple.hlsl",
+				"MainVS", "vs_5_1"
+			);
+
+			ComPtr<ID3DBlob> PixelShader = Render::CompileShader(
+				"content/shaders/Simple.hlsl",
+				"MainPS", "ps_5_1"
+			);
+
+			D3D12_GRAPHICS_PIPELINE_STATE_DESC PSODesc = {};
+			PSODesc.VS.BytecodeLength = VertexShader->GetBufferSize();
+			PSODesc.VS.pShaderBytecode = VertexShader->GetBufferPointer();
+			PSODesc.PS.BytecodeLength = PixelShader->GetBufferSize();
+			PSODesc.PS.pShaderBytecode = PixelShader->GetBufferPointer();
+			PSODesc.pRootSignature = RootSignature.Get();
+			PSODesc.NumRenderTargets = 1;
+			PSODesc.RTVFormats[0] = DXGI_FORMAT_R10G10B10A2_UNORM;
+			PSODesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+			PSODesc.InputLayout.NumElements = ArraySize(PSOLayout);
+			PSODesc.InputLayout.pInputElementDescs = PSOLayout;
+			PSODesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+			PSODesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+			PSODesc.SampleDesc.Count = 1;
+			PSODesc.DepthStencilState.DepthEnable = false;
+			PSODesc.DepthStencilState.StencilEnable = false;
+			PSODesc.SampleMask = 0xFFFFFFFF;
+			PSODesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+			PSO = RenderContext.CreatePSO(&PSODesc);
+		}
+
+		{
+			unsigned char *Data = stbi_load("lena_std.tga", &Lena.Size.x, &Lena.Size.y, nullptr, 4);
+			Lena.Data = StringView((char *)Data, Lena.Size.x * Lena.Size.y * 4);
+			Lena.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+
+			Lena.Texture = RenderContext.CreateTexture(&Lena, 4);
+			Lena.SRVHeapIndex = RenderContext.CreateSRV(Lena);
+			stbi_image_free((stbi_uc*)Lena.Data.data());
+		}
+		Counter.fetch_add(1);
+		return 0;
+	});
+
+	RenderContext.InitGUIResources(Gui.FontTexData.Texture);
 	RenderContext.FlushUpload();
 
-
 	UINT64 CurrentFenceValue = 0;
-
 	UINT64 FrameFenceValues[3] = {};
 
     //Main message loop
@@ -283,37 +416,23 @@ int main(void)
 			}
 		}
 
-		// QUAD
+		// Mesh
+		if (Counter == 2)
 		{
+			ImGui::Text("Draws mesh");
 			CommandList->SetGraphicsRootSignature(RootSignature.Get());
-			// UPDATE CB AND ROOT SIGNATURE
-			{
-				ConstantBuffer* CB;
-				ConstantBuffers[RenderContext.mCurrentBackBufferIndex]->Map(0, nullptr, (void**)&CB);
-				CB->Scale = (float)std::sin(glfwGetTime());
-				ConstantBuffers[RenderContext.mCurrentBackBufferIndex]->Unmap(0, nullptr);
 
-				ID3D12DescriptorHeap* DescriptorHeaps[] = {
-					SRVDescriptorHeap.Get()
-				};
-
-				CommandList->SetDescriptorHeaps(ArraySize(DescriptorHeaps), DescriptorHeaps);
-				CommandList->SetGraphicsRootDescriptorTable(
-					0,
-					SRVDescriptorHeap->GetGPUDescriptorHandleForHeapStart()
-				);
-				CommandList->SetGraphicsRootConstantBufferView(
-					1,
-					ConstantBuffers[RenderContext.mCurrentBackBufferIndex]->GetGPUVirtualAddress()
-				);
-			}
-
+			RenderContext.BindDescriptors(CommandList);
 			CommandList->SetPipelineState(PSO.Get());
 			CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-			CommandList->IASetVertexBuffers(0, 1, &VertexBufferView);
-			CommandList->IASetIndexBuffer(&IndexBufferView);
+			for (auto& Mesh : MeshDatas)
+			{
+				auto Desc = Mesh.VertexBuffer->GetDesc();
+				CommandList->IASetVertexBuffers(0, 1, &Mesh.VertexBufferView);
+				CommandList->IASetIndexBuffer(&Mesh.IndexBufferView);
 
-			CommandList->DrawIndexedInstanced(6, 1, 0, 0, 0);
+				CommandList->DrawIndexedInstanced(Mesh.IndexBufferView.SizeInBytes / 4, 1, 0, 0, 0);
+			}
 		}
 
 		RenderContext.RenderGUI(CommandList, Window);

@@ -1,5 +1,5 @@
 #pragma once
-#include <eathread/eathread_mutex.h>
+#include <mutex>
 
-using Mutex = EA::Thread::Mutex;
-using ScopedLock = EA::Thread::AutoMutex;
+using Mutex = std::mutex;
+using ScopedLock = std::lock_guard<Mutex>;

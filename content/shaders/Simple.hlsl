@@ -11,8 +11,6 @@ struct PerFrameConstants
 	float2 ScreenSize;
 };
 
-ConstantBuffer<PerFrameConstants> Constants : register(b0);
-
 VertexShaderOutput MainVS(
 	float4 position : POSITION,
 	float2 uv : TEXCOORD)
@@ -20,7 +18,6 @@ VertexShaderOutput MainVS(
 	VertexShaderOutput output;
 
 	output.Position = position;
-	output.Position.xy *= Constants.Scale.x;
 	output.UV = uv;
 
 	return output;

@@ -59,6 +59,7 @@ end
         "./thirdparty/EASTL",
         "./thirdparty/assimp",
         "./thirdparty/irrXML",
+        "./thirdparty/tbb",
         "./thirdparty/zlib",
         "./thirdparty/DirectXTK12"
     }
@@ -83,6 +84,7 @@ end
         "./thirdparty/glfw/include",
         "./thirdparty/imgui",
         "./thirdparty/assimp/include",
+        "./thirdparty/tbb/include",
         "./thirdparty/irrXML/include",
         "./thirdparty/DirectXTK12/include",
         "./thirdparty/EASTL/include"
@@ -92,14 +94,17 @@ end
         "_CRT_SECURE_NO_WARNINGS",
         "WIN32",
         "_WINDOWS",
+        "TBB_USE_DEBUG",
         "GLFW_EXPOSE_NATIVE_WIN32"
     }
 
     filter "configurations:Debug"
         defines { "EA_DEBUG" }
         links {
+            "tbb_debug",
+            "tbbmalloc_debug",
+            "tbbproxy_debug",
             "EASTLd",
-            "EAThreadD",
             "assimp-vc142-mtd",
             "libz-staticmtd"
         }
@@ -107,8 +112,10 @@ end
     filter ""
     
     links {
+        "tbb",
+        "tbbmalloc",
+        "tbbproxy",
         "EASTL",
-        "EAThread",
         "assimp-vc142-mt",
         "libz-staticmt"
     }
