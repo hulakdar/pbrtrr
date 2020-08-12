@@ -6,6 +6,7 @@ workspace "pbrtrr"
 	{
 		"Debug",
 		"Development",
+		"Profile",
 		"Release"
     }
 
@@ -64,8 +65,10 @@ end
         "./thirdparty/DirectXTK12"
     }
 
-    files { "./src/**.h",   "./src/**.cpp",
-            "./src/**.hpp", "./src/**.tpp" }
+    files {
+        "./thirdparty/tracy/TracyClient.cpp",
+        "./src/**.h",   "./src/**.cpp",
+        "./src/**.hpp", "./src/**.tpp" }
 
     links {
         "d3dcompiler",
@@ -98,6 +101,7 @@ end
         "GLFW_EXPOSE_NATIVE_WIN32"
     }
 
+
     filter "configurations:Debug"
         defines { "EA_DEBUG" }
         links {
@@ -109,16 +113,16 @@ end
             "libz-staticmtd"
         }
 
-    filter ""
-    
-    links {
-        "tbb",
-        "tbbmalloc",
-        "tbbproxy",
-        "EASTL",
-        "assimp-vc142-mt",
-        "libz-staticmt"
-    }
+    filter "configurations:Profile"
+        defines { "TRACY_ENABLE" }
+        links {
+            "tbb",
+            "tbbmalloc",
+            "tbbproxy",
+            "EASTL",
+            "assimp-vc142-mt",
+            "libz-staticmt"
+        }
 
 
 
