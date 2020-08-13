@@ -161,7 +161,7 @@ int main(void)
 	TaskGroup.run([&]()
 	{
 		const aiScene* Scene = Importer.ReadFile(
-			"content/SunTemple/SunTemple.fbx",
+			"content/DamagedHelmet.glb",
 			aiProcess_ConvertToLeftHanded | aiProcessPreset_TargetRealtime_MaxQuality
 		);
 
@@ -272,8 +272,8 @@ int main(void)
 			WorkerCommandList->Close();
 			RenderContext.Execute(WorkerCommandList.Get());
 
-			VALIDATE(RenderContext.mGraphicsQueue->Signal(FrameFences[0].Get(), 1));
 			ComPtr<ID3D12Fence> WorkerFrameFence = RenderContext.CreateFence();
+			VALIDATE(RenderContext.mGraphicsQueue->Signal(WorkerFrameFence.Get(), 1));
 			HANDLE WorkerWaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
 			WaitForFenceValue(WorkerFrameFence, 1, WorkerWaitEvent);
@@ -419,6 +419,7 @@ int main(void)
 		// Mesh
 		if (Counter == 2)
 		{
+			RenderContext.FlushUpload();
 			ImGui::Text("Draws mesh");
 			CommandList->SetGraphicsRootSignature(RootSignature.Get());
 
@@ -452,6 +453,7 @@ int main(void)
 		RenderContext.mCurrentBackBufferIndex = (RenderContext.mCurrentBackBufferIndex + 1) % 3;
 	}
 
+	Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex], CurrentFenceValue, WaitEvent);
 	CloseHandle(WaitEvent);
 
 	glfwTerminate();

@@ -102,7 +102,7 @@ public:
 
 		DXGI_SWAP_CHAIN_FLAG SwapChainFlag = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
-		mTearingSupported = CheckTearingSupport(mDXGIFactory);
+		mTearingSupported = false;// CheckTearingSupport(mDXGIFactory);
 		if (mTearingSupported)
 			SwapChainFlag = (DXGI_SWAP_CHAIN_FLAG)(SwapChainFlag | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
 		mSwapChain = CreateSwapChain(Window, SwapChainFlag);
@@ -113,7 +113,7 @@ public:
 
 		if (mTearingSupported)
 			mPresentFlags |= DXGI_PRESENT_ALLOW_TEARING;
-		mSyncInterval = !mTearingSupported;
+		mSyncInterval = 2;// !mTearingSupported;
 
 		InitUploadResources();
 
@@ -182,7 +182,6 @@ public:
 		Desc.Type = Type;
 		Desc.Flags = Flags;
 	 
-		
 		{
 			ScopedLock Lock(mDeviceMutex);
 			VALIDATE(mDevice->CreateDescriptorHeap(&Desc, IID_PPV_ARGS(&Result)));
@@ -321,12 +320,13 @@ public:
 
 	void FlushUpload()
 	{
-		UploadBuffer->Unmap(0, nullptr);
+		if (mUploadTransitions.empty())
+		{
+			return;
+		}
 
 		UploadCommandList->ResourceBarrier((UINT)mUploadTransitions.size(), mUploadTransitions.data());
 		VALIDATE(UploadCommandList->Close());
-		mUploadBufferAddress = NULL;
-		UploadBufferOffset = 0;
 
 		ID3D12CommandList* CommandListsForSubmission[] = { UploadCommandList.Get() };
 		mGraphicsQueue->ExecuteCommandLists(ArraySize(CommandListsForSubmission), CommandListsForSubmission);
@@ -336,11 +336,11 @@ public:
 
 		mUploadTransitions.clear();
 		mUploadBuffers.clear();
+		mUploadBufferAddress = NULL;
 		UploadBufferOffset = 0;
 
 		VALIDATE(UploadCommandAllocator->Reset());
 		VALIDATE(UploadCommandList->Reset(UploadCommandAllocator.Get(), nullptr));
-		VALIDATE(UploadBuffer->Map(0, nullptr, (void**)&mUploadBufferAddress));
 	}
 
 	void UploadBufferData(ComPtr<ID3D12Resource>& Destination, const void* Data, UINT64 Size, D3D12_RESOURCE_STATES TargetState)
