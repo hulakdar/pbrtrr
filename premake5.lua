@@ -86,6 +86,7 @@ end
         "./src/",
         "./thirdparty/glfw/include",
         "./thirdparty/imgui",
+        "./thirdparty/tracy",
         "./thirdparty/assimp/include",
         "./thirdparty/tbb/include",
         "./thirdparty/irrXML/include",

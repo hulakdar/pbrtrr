@@ -1,5 +1,6 @@
 #pragma once
-#include <tbb/mutex.h>
+#include <mutex>
+#include <Tracy.hpp>
 
-using Mutex = tbb::mutex;
-using ScopedLock = tbb::mutex::scoped_lock;
+using Mutex = std::mutex;
+using ScopedLock = std::lock_guard<LockableBase(Mutex)>;

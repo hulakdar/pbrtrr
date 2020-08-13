@@ -10,6 +10,7 @@
 #include <dxgi1_6.h>
 #include <imgui.h>
 #include <d3dcompiler.h>
+#include <Tracy.hpp>
 
 //#define TEST_WARP
 
@@ -271,21 +272,24 @@ public:
 
 		UINT64 UploadBufferSize = GetRequiredIntermediateSize(Result.Get(), 0, 1);
 		ComPtr<ID3D12Resource> TextureUploadBuffer = CreateBuffer(UploadBufferSize, true);
-		mUploadBuffers.push_back(TextureUploadBuffer);
 
 		D3D12_SUBRESOURCE_DATA SrcData = {};
 		SrcData.pData = TexData->Data.data();
 		SrcData.RowPitch = Size.x * Components;
 		SrcData.SlicePitch = Size.x * Size.y * Components;
 
-		UpdateSubresources<1>(UploadCommandList.Get(), Result.Get(), TextureUploadBuffer.Get(), 0, 0, 1, &SrcData);
 
 		D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 											Result.Get(),
 											D3D12_RESOURCE_STATE_COPY_DEST,
 											D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
 										);
-		mUploadTransitions.push_back(Barrier);
+		{
+			ScopedLock Lock(mUploadMutex);
+			mUploadBuffers.push_back(TextureUploadBuffer);
+			UpdateSubresources<1>(UploadCommandList.Get(), Result.Get(), TextureUploadBuffer.Get(), 0, 0, 1, &SrcData);
+			mUploadTransitions.push_back(Barrier);
+		}
 
 		return Result;
 	}
@@ -320,6 +324,7 @@ public:
 
 	void FlushUpload()
 	{
+		ScopedLock Lock(mUploadMutex);
 		if (mUploadTransitions.empty())
 		{
 			return;
@@ -330,9 +335,9 @@ public:
 
 		ID3D12CommandList* CommandListsForSubmission[] = { UploadCommandList.Get() };
 		mGraphicsQueue->ExecuteCommandLists(ArraySize(CommandListsForSubmission), CommandListsForSubmission);
-		VALIDATE(mGraphicsQueue->Signal(UploadFence.Get(), 1));
+		VALIDATE(mGraphicsQueue->Signal(UploadFence.Get(), ++UploadFenceValue));
 
-		WaitForFenceValue(UploadFence, 1, UploadWaitEvent);
+		WaitForFenceValue(UploadFence, UploadFenceValue, UploadWaitEvent);
 
 		mUploadTransitions.clear();
 		mUploadBuffers.clear();
@@ -351,17 +356,20 @@ public:
 			FlushUpload();
 		}
 
-		::memcpy(mUploadBufferAddress + UploadBufferOffset, Data, Size);
-		UploadCommandList->CopyBufferRegion(Destination.Get(), 0, UploadBuffer.Get(), UploadBufferOffset, Size);
-		UploadBufferOffset += Size;
-
 		D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 											Destination.Get(),
 											D3D12_RESOURCE_STATE_COPY_DEST,
 											TargetState
 										);
-		mUploadTransitions.push_back(Barrier);
 
+		{
+			ScopedLock Lock(mUploadMutex);
+			::memcpy(mUploadBufferAddress + UploadBufferOffset, Data, Size);
+			UploadCommandList->CopyBufferRegion(Destination.Get(), 0, UploadBuffer.Get(), UploadBufferOffset, Size);
+			UploadBufferOffset += Size;
+
+			mUploadTransitions.push_back(Barrier);
+		}
 		Buffers[Destination->GetGPUVirtualAddress()] = MOVE(Destination);
 	}
 
@@ -628,7 +636,8 @@ public:
 	}
 
 private:
-	Mutex mDeviceMutex;
+	TracyLockable(Mutex, mDeviceMutex);
+	TracyLockable(Mutex, mUploadMutex);
 
 	TArray<ComPtr<ID3D12Resource>> mUploadBuffers;
 	TArray<D3D12_RESOURCE_BARRIER> mUploadTransitions;
@@ -639,6 +648,7 @@ private:
 	UINT64					UploadBufferOffset = NULL;
 	ComPtr<ID3D12Resource>	UploadBuffer;
 	ComPtr<ID3D12Fence>		UploadFence;
+	UINT64					UploadFenceValue = 0;
 	HANDLE					UploadWaitEvent;
 
 	bool mTearingSupported = false;

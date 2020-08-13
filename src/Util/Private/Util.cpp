@@ -1,3 +1,4 @@
+#include <Tracy.hpp>
 #include <stdint.h>
 #include <fstream>
 #include "Containers/String.h"
@@ -53,10 +54,28 @@ StringView LoadWholeFile(const char *Path)
 // maybe we could write our own custom allocator in future
 void* operator new[](size_t size, const char*, int, unsigned, const char*, int)
 {
-	return new uint8_t[size];
+	uint8_t *ptr = new uint8_t[size];
+	TracyAlloc (ptr , size);
+	return ptr;
 }
 
 void* operator new[](size_t size, size_t, size_t, const char*, int, unsigned, const char*, int) 
 {
-	return new uint8_t[size];
+	uint8_t *ptr = new uint8_t[size];
+	TracyAlloc (ptr , size);
+	return ptr;
 }  
+
+
+void* operator new(std :: size_t count)
+{
+	auto ptr = malloc(count);
+	TracyAlloc (ptr , count);
+	return ptr;
+}
+void operator delete(void* ptr) noexcept
+{
+	TracyFree (ptr);
+	free(ptr);
+}
+

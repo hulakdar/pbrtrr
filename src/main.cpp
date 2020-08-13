@@ -161,7 +161,7 @@ int main(void)
 	TaskGroup.run([&]()
 	{
 		const aiScene* Scene = Importer.ReadFile(
-			"content/DamagedHelmet.glb",
+			"content/SunTemple/SunTemple.fbx",
 			aiProcess_ConvertToLeftHanded | aiProcessPreset_TargetRealtime_MaxQuality
 		);
 
