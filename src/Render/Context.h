@@ -84,6 +84,7 @@ public:
 
 	ComPtr<ID3D12Device>		mDevice;
 	ComPtr<ID3D12CommandQueue>	mGraphicsQueue;
+	ComPtr<ID3D12CommandQueue>	mCopyQueue;
 	ComPtr<ID3D12Resource>		mBackBuffers[BUFFER_COUNT];
 
 	UINT mCurrentBackBufferIndex = 0;
@@ -91,6 +92,7 @@ public:
 
 	bool Init(System::Window& Window)
 	{
+		ZoneScoped;
 		mDXGIFactory = CreateFactory();
 		mDevice = CreateDevice();
 
@@ -99,6 +101,7 @@ public:
 			mDescriptorSizes[i] = mDevice->GetDescriptorHandleIncrementSize((D3D12_DESCRIPTOR_HEAP_TYPE)i);
 		}
 		mGraphicsQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_DIRECT);
+		mCopyQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_COPY);
 		UploadWaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
 		DXGI_SWAP_CHAIN_FLAG SwapChainFlag = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
@@ -124,6 +127,7 @@ public:
 	// returns index in SRV heap
 	UINT CreateSRV(TextureData& Texture)
 	{
+		ZoneScoped;
 		D3D12_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
 		SRVDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 		SRVDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -139,6 +143,7 @@ public:
 
 	void InitUploadResources()
 	{
+		ZoneScoped;
 		UploadFence = CreateFence();
 		UploadCommandAllocator = CreateCommandAllocator();
 		UploadCommandList = CreateCommandList(UploadCommandAllocator, D3D12_COMMAND_LIST_TYPE_DIRECT);
@@ -151,11 +156,13 @@ public:
 
 	void Present()
 	{
+		ZoneScoped;
 		VALIDATE(mSwapChain->Present(mSyncInterval, mPresentFlags));
 	}
 
 	ComPtr<ID3D12RootSignature> CreateRootSignature(ComPtr<ID3DBlob> RootBlob)
 	{
+		ZoneScoped;
 		ComPtr<ID3D12RootSignature> Result;
 
 		{
@@ -176,6 +183,7 @@ public:
 
 	ComPtr<ID3D12DescriptorHeap> CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE Type, uint32_t NumDescriptors, D3D12_DESCRIPTOR_HEAP_FLAGS Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE	)
 	{
+		ZoneScoped;
 		ComPtr<ID3D12DescriptorHeap> Result;
 	 
 		D3D12_DESCRIPTOR_HEAP_DESC Desc = {};
@@ -194,6 +202,7 @@ public:
 
 	ComPtr<ID3D12PipelineState> CreatePSO(D3D12_GRAPHICS_PIPELINE_STATE_DESC* PSODesc)
 	{
+		ZoneScoped;
 		ComPtr<ID3D12PipelineState> Result;
 
 		{
@@ -205,6 +214,7 @@ public:
 
 	ComPtr<ID3D12CommandAllocator> CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE Type = D3D12_COMMAND_LIST_TYPE_DIRECT)
 	{
+		ZoneScoped;
 		ComPtr<ID3D12CommandAllocator> Result;
 
 		{
@@ -216,6 +226,7 @@ public:
 
 	ComPtr<ID3D12GraphicsCommandList> CreateCommandList(ComPtr<ID3D12CommandAllocator>& CommandAllocator, D3D12_COMMAND_LIST_TYPE Type)
 	{
+		ZoneScoped;
 		ComPtr<ID3D12GraphicsCommandList> Result;
 
 		{
@@ -231,6 +242,7 @@ public:
 	template<typename ConstantBufferType>
 	ComPtr<ID3D12Resource> CreateConstantBuffer()
 	{
+		ZoneScoped;
 		D3D12_RESOURCE_DESC ConstantBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(ConstantBufferType));
 
 		ComPtr<ID3D12Resource> Result = CreateResource(&ConstantBufferDesc, &UploadHeapProperties, D3D12_RESOURCE_STATE_GENERIC_READ);
@@ -244,6 +256,7 @@ public:
 
 	ComPtr<ID3D12Resource> CreateResource(D3D12_RESOURCE_DESC *ResourceDescription, D3D12_HEAP_PROPERTIES *HeapProperties, D3D12_RESOURCE_STATES InitialState)
 	{
+		ZoneScoped;
 		ComPtr<ID3D12Resource> Result;
 
 		{
@@ -262,6 +275,7 @@ public:
 
 	ComPtr<ID3D12Resource> CreateTexture(TextureData *TexData, UINT32 Components)
 	{
+		ZoneScoped;
 		IVector2 Size = TexData->Size;
 		D3D12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
 			TexData->Format,
@@ -296,6 +310,7 @@ public:
 
 	ComPtr<ID3D12Fence> CreateFence(UINT64 InitialValue = 0, D3D12_FENCE_FLAGS Flags = D3D12_FENCE_FLAG_NONE)
 	{
+		ZoneScoped;
 		ComPtr<ID3D12Fence> Result;
 	 
 		{
@@ -324,6 +339,7 @@ public:
 
 	void FlushUpload()
 	{
+		ZoneScoped;
 		ScopedLock Lock(mUploadMutex);
 		if (mUploadTransitions.empty())
 		{
@@ -350,6 +366,7 @@ public:
 
 	void UploadBufferData(ComPtr<ID3D12Resource>& Destination, const void* Data, UINT64 Size, D3D12_RESOURCE_STATES TargetState)
 	{
+		ZoneScoped;
 		CHECK(Size <= UPLOAD_BUFFER_SIZE, "Buffer data is too large for this.");
 		if (UploadBufferOffset + Size > UPLOAD_BUFFER_SIZE)
 		{
@@ -375,6 +392,7 @@ public:
 
 	D3D12_VERTEX_BUFFER_VIEW	CreateVertexBuffer(const void *Data, UINT64 Size, UINT64 Stride)
 	{
+		ZoneScoped;
 		ComPtr<ID3D12Resource> Buffer = CreateBuffer(Size);
 
 		D3D12_VERTEX_BUFFER_VIEW Result;
@@ -388,6 +406,7 @@ public:
 
 	D3D12_INDEX_BUFFER_VIEW		CreateIndexBuffer(const void *Data, UINT64 Size, DXGI_FORMAT Format)
 	{
+		ZoneScoped;
 		ComPtr<ID3D12Resource> Buffer = CreateBuffer(Size);
 
 		D3D12_INDEX_BUFFER_VIEW Result;
@@ -512,6 +531,7 @@ public:
 	ComPtr<ID3D12Resource> ImGuiIndexBuffers[BUFFER_COUNT];
 	void RenderGUI(ComPtr<ID3D12GraphicsCommandList> CommandList, System::Window& Window)
 	{
+		ZoneScoped;
 		ImGui::EndFrame();
 		ImGui::Render();
 
@@ -555,8 +575,7 @@ public:
 		ImGuiVertexBuffer->Unmap(0, nullptr);
 		ImGuiIndexBuffer->Unmap(0, nullptr);
 
-		CHECK(VtxOffset == VertexBufferSize, "");
-		CHECK(IdxOffset == IndexBufferSize, "");
+		CHECK(VtxOffset == VertexBufferSize && IdxOffset == IndexBufferSize, "Make sure that we upload everything.");
 
 		ID3D12DescriptorHeap* DescriptorHeaps[] = {
 			GuiDescriptorHeap.Get()
@@ -618,6 +637,7 @@ public:
 
 	void BindDescriptors(ComPtr<ID3D12GraphicsCommandList>& CommandList)
 	{
+		ZoneScoped;
 		ID3D12DescriptorHeap* DescriptorHeaps[] = {
 			mSRVDescriptorHeap.Get()
 		};
@@ -629,8 +649,16 @@ public:
 		);
 	}
 
+	void ExecuteCopy(ID3D12CommandList *CmdList)
+	{
+		ZoneScoped;
+		ID3D12CommandList* const CommandLists[] = { CmdList };
+		mCopyQueue->ExecuteCommandLists(ArraySize(CommandLists), CommandLists);
+	}
+
 	void Execute(ID3D12CommandList *CmdList)
 	{
+		ZoneScoped;
 		ID3D12CommandList* const CommandLists[] = { CmdList };
 		mGraphicsQueue->ExecuteCommandLists(ArraySize(CommandLists), CommandLists);
 	}
@@ -668,6 +696,7 @@ private:
 
 	ComPtr<IDXGISwapChain1> CreateSwapChain(System::Window Window, DXGI_SWAP_CHAIN_FLAG Flags)
 	{
+		ZoneScoped;
 		ComPtr<IDXGISwapChain1> Result;
 
 		DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
@@ -689,6 +718,7 @@ private:
 
 	void UpdateRenderTargetViews()
 	{
+		ZoneScoped;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 	 
 		for (int i = 0; i < BUFFER_COUNT; ++i)

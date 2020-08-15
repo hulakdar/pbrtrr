@@ -102,9 +102,12 @@ end
         "GLFW_EXPOSE_NATIVE_WIN32"
     }
 
-
-    filter "configurations:Debug"
-        defines { "EA_DEBUG" }
+    filter "Debug"
+        staticruntime "Off"
+        defines {
+            "EA_DEBUG",
+            "BUILD_DEBUG"
+        }
         links {
             "tbb_debug",
             "tbbmalloc_debug",
@@ -114,8 +117,22 @@ end
             "libz-staticmtd"
         }
 
-    filter "configurations:Profile"
-        defines { "TRACY_ENABLE" }
+    filter "Profile"
+        defines {
+            "TRACY_ENABLE",
+            "BUILD_DEVELOPMENT"
+        }
+        links {
+            "tbb",
+            "tbbmalloc",
+            "tbbproxy",
+            "EASTL",
+            "assimp-vc142-mt",
+            "libz-staticmt"
+        }
+    
+    filter "Development"
+        defines { "BUILD_DEVELOPMENT" }
         links {
             "tbb",
             "tbbmalloc",
@@ -126,6 +143,16 @@ end
         }
 
 
+    filter "Release"
+        defines { "BUILD_RELEASE" }
+        links {
+            "tbb",
+            "tbbmalloc",
+            "tbbproxy",
+            "EASTL",
+            "assimp-vc142-mt",
+            "libz-staticmt"
+        }
 
 
     --[[ This stuff is just fore reference, it doesn't really work that well

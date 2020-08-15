@@ -160,6 +160,7 @@ int main(void)
 	tbb::task_group TaskGroup;
 	TaskGroup.run([&]()
 	{
+		ZoneScopedN("File parsing and upload")
 		const aiScene* Scene = Importer.ReadFile(
 			"content/SunTemple/SunTemple.fbx",
 			aiProcess_ConvertToLeftHanded | aiProcessPreset_TargetRealtime_MaxQuality
@@ -167,8 +168,8 @@ int main(void)
 
 		CHECK_RETURN(Scene != nullptr, "Load failed", 0);
 
-		ComPtr<ID3D12CommandAllocator> WorkerCommandAllocator = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT);
-		ComPtr<ID3D12GraphicsCommandList> WorkerCommandList = RenderContext.CreateCommandList(WorkerCommandAllocator, D3D12_COMMAND_LIST_TYPE_DIRECT);
+		ComPtr<ID3D12CommandAllocator> WorkerCommandAllocator = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY);
+		ComPtr<ID3D12GraphicsCommandList> WorkerCommandList = RenderContext.CreateCommandList(WorkerCommandAllocator, D3D12_COMMAND_LIST_TYPE_COPY);
 		WorkerCommandList->Reset(WorkerCommandAllocator.Get(), nullptr);
 
 		{
@@ -197,13 +198,14 @@ int main(void)
 				parallel_for(
 					blocked_range(0U, Scene->mNumMeshes),
 					[Scene, CpuPtr, &UploadOffsets](blocked_range<unsigned int>& range)
-				{
-					for (unsigned int i = range.begin(); i < range.end(); ++i)
 					{
-						aiMesh* Mesh = Scene->mMeshes[i];
-						UploadMeshData(CpuPtr + UploadOffsets[i], Mesh);
+						ZoneScopedN("Upload worker")
+						for (unsigned int i = range.begin(); i < range.end(); ++i)
+						{
+							aiMesh* Mesh = Scene->mMeshes[i];
+							UploadMeshData(CpuPtr + UploadOffsets[i], Mesh);
+						}
 					}
-				}
 				);
 
 				UploadBuffer->Unmap(0, NULL);
@@ -223,6 +225,7 @@ int main(void)
 			TArray<Mesh> Meshes;
 			while (!ProcessingQueue.empty())
 			{
+				ZoneScopedN("Pump mesh queue")
 				aiNode* Current = ProcessingQueue.front();
 				ProcessingQueue.pop();
 				for (int i = 0; i < Current->mNumChildren; ++i)
@@ -248,34 +251,38 @@ int main(void)
 			}
 
 			TArray<D3D12_RESOURCE_BARRIER> UploadTransitions;
-			for (int i = 0; i < Scene->mNumMeshes; ++i)
 			{
-				MeshData& Data = MeshDatas[i];
-				WorkerCommandList->CopyBufferRegion(Data.VertexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i], Data.VertexBufferView.SizeInBytes);
-				WorkerCommandList->CopyBufferRegion(Data.IndexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i] + Data.VertexBufferView.SizeInBytes, Data.IndexBufferView.SizeInBytes);
+				ZoneScopedN("Fill command list for upload")
+				for (int i = 0; i < Scene->mNumMeshes; ++i)
+				{
+					MeshData& Data = MeshDatas[i];
+					WorkerCommandList->CopyBufferRegion(Data.VertexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i], Data.VertexBufferView.SizeInBytes);
+					WorkerCommandList->CopyBufferRegion(Data.IndexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i] + Data.VertexBufferView.SizeInBytes, Data.IndexBufferView.SizeInBytes);
 
-				UploadTransitions.push_back(
-					CD3DX12_RESOURCE_BARRIER::Transition(
-						Data.VertexBuffer.Get(),
-						D3D12_RESOURCE_STATE_COPY_DEST,
-						D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER)
-				);
+					UploadTransitions.push_back(
+						CD3DX12_RESOURCE_BARRIER::Transition(
+							Data.VertexBuffer.Get(),
+							D3D12_RESOURCE_STATE_COPY_DEST,
+							D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER)
+					);
 
-				UploadTransitions.push_back(
-					CD3DX12_RESOURCE_BARRIER::Transition(
-						Data.IndexBuffer.Get(),
-						D3D12_RESOURCE_STATE_COPY_DEST,
-						D3D12_RESOURCE_STATE_INDEX_BUFFER)
-				);
+					UploadTransitions.push_back(
+						CD3DX12_RESOURCE_BARRIER::Transition(
+							Data.IndexBuffer.Get(),
+							D3D12_RESOURCE_STATE_COPY_DEST,
+							D3D12_RESOURCE_STATE_INDEX_BUFFER)
+					);
+				}
 			}
 
 			WorkerCommandList->Close();
-			RenderContext.Execute(WorkerCommandList.Get());
+			RenderContext.ExecuteCopy(WorkerCommandList.Get());
 
 			ComPtr<ID3D12Fence> WorkerFrameFence = RenderContext.CreateFence();
-			VALIDATE(RenderContext.mGraphicsQueue->Signal(WorkerFrameFence.Get(), 1));
+			VALIDATE(RenderContext.mCopyQueue->Signal(WorkerFrameFence.Get(), 1));
 			HANDLE WorkerWaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
+			ZoneScopedN("Wait for worker fence")
 			WaitForFenceValue(WorkerFrameFence, 1, WorkerWaitEvent);
 			CloseHandle(WorkerWaitEvent);
 			Counter.fetch_add(1);
@@ -383,6 +390,20 @@ int main(void)
     //Main message loop
 	while (!glfwWindowShouldClose(Window.mHandle))
 	{
+		FrameMark
+
+		if (Counter == 2)
+		{
+			Counter.fetch_add(1);
+			TaskGroup.run(
+				[&RenderContext, &Counter]()
+				{
+					RenderContext.FlushUpload();
+					Counter.fetch_add(1);
+				}
+			);
+		}
+
 		ImGui::NewFrame();
 
 		static bool ShowDemo = true;
@@ -417,9 +438,8 @@ int main(void)
 		}
 
 		// Mesh
-		if (Counter == 2)
+		if (Counter == 4)
 		{
-			RenderContext.FlushUpload();
 			ImGui::Text("Draws mesh");
 			CommandList->SetGraphicsRootSignature(RootSignature.Get());
 
@@ -453,6 +473,7 @@ int main(void)
 		RenderContext.mCurrentBackBufferIndex = (RenderContext.mCurrentBackBufferIndex + 1) % 3;
 	}
 
+	TaskGroup.wait();
 	Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex], CurrentFenceValue, WaitEvent);
 	CloseHandle(WaitEvent);
 
