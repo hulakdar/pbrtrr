@@ -136,8 +136,6 @@ int main(void)
 	System::GUI Gui;
 	Gui.Init(Window, RenderContext);
 
-	HANDLE WaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-
 	ComPtr<ID3D12CommandAllocator> CommandAllocators[3] = {};
 	ComPtr<ID3D12Fence> FrameFences[3] = {};
 	for (int i = 0; i < 3; ++i)
@@ -153,29 +151,36 @@ int main(void)
 
 	Assimp::Importer Importer;
 
+
+	struct Mesh
+	{
+		Matrix	Transform;
+		TArray<UINT> MeshIDs;
+	};
 	TArray<MeshData> MeshDatas;
+	TArray<Mesh> Meshes;
 
 	std::atomic<UINT> Counter(0);
 
 	tbb::task_group TaskGroup;
 	TaskGroup.run([&]()
 	{
-		ZoneScopedN("File parsing and upload")
-		const aiScene* Scene = Importer.ReadFile(
-			"content/SunTemple/SunTemple.fbx",
-			aiProcess_ConvertToLeftHanded | aiProcessPreset_TargetRealtime_MaxQuality
-		);
+		const aiScene* Scene = nullptr;
+		{
+			ZoneScopedN("Scene file parsing");
 
-		CHECK_RETURN(Scene != nullptr, "Load failed", 0);
-
-		ComPtr<ID3D12CommandAllocator> WorkerCommandAllocator = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY);
-		ComPtr<ID3D12GraphicsCommandList> WorkerCommandList = RenderContext.CreateCommandList(WorkerCommandAllocator, D3D12_COMMAND_LIST_TYPE_COPY);
-		WorkerCommandList->Reset(WorkerCommandAllocator.Get(), nullptr);
+			Scene = Importer.ReadFile(
+				"content/SunTemple/SunTemple.fbx",
+				aiProcess_ConvertToLeftHanded | aiProcessPreset_TargetRealtime_MaxQuality
+			);
+			CHECK_RETURN(Scene != nullptr, "Load failed", 0);
+		}
 
 		{
 			TArray<UINT> UploadOffsets;
 			ComPtr<ID3D12Resource> UploadBuffer;
 			{
+				ZoneScopedN("Upload to GPU-visible memory");
 				UploadOffsets.resize(Scene->mNumMeshes);
 				MeshDatas.resize(Scene->mNumMeshes);
 				UINT UploadBufferSize = 0;
@@ -199,7 +204,7 @@ int main(void)
 					blocked_range(0U, Scene->mNumMeshes),
 					[Scene, CpuPtr, &UploadOffsets](blocked_range<unsigned int>& range)
 					{
-						ZoneScopedN("Upload worker")
+						ZoneScopedN("Upload parallel for")
 						for (unsigned int i = range.begin(); i < range.end(); ++i)
 						{
 							aiMesh* Mesh = Scene->mMeshes[i];
@@ -211,18 +216,9 @@ int main(void)
 				UploadBuffer->Unmap(0, NULL);
 			}
 
-			struct Mesh
-			{
-				String	Name;
-				Matrix	Transform;
-
-				TArray<unsigned int> MeshIDs;
-			};
-
 			TQueue<aiNode*> ProcessingQueue;
 			ProcessingQueue.push(Scene->mRootNode);
 
-			TArray<Mesh> Meshes;
 			while (!ProcessingQueue.empty())
 			{
 				ZoneScopedN("Pump mesh queue")
@@ -233,7 +229,7 @@ int main(void)
 					ProcessingQueue.push(Current->mChildren[i]);
 				}
 
-				TArray<unsigned int> MeshIDs;
+				TArray<UINT> MeshIDs;
 				MeshIDs.reserve(Current->mNumMeshes);
 				for (int i = 0; i < Current->mNumMeshes; ++i)
 				{
@@ -242,36 +238,28 @@ int main(void)
 				}
 
 				Meshes.push_back(
-					Mesh{
-						String(Current->mName.C_Str()),
+					Mesh
+					{
 						Matrix(Current->mTransformation[0]),
 						MOVE(MeshIDs)
 					}
 				);
 			}
 
-			TArray<D3D12_RESOURCE_BARRIER> UploadTransitions;
+			ComPtr<ID3D12CommandAllocator> WorkerCommandAllocator = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY);
+			ComPtr<ID3D12GraphicsCommandList> WorkerCommandList = RenderContext.CreateCommandList(WorkerCommandAllocator, D3D12_COMMAND_LIST_TYPE_COPY);
+			WorkerCommandList->Reset(WorkerCommandAllocator.Get(), nullptr);
+
 			{
-				ZoneScopedN("Fill command list for upload")
-				for (int i = 0; i < Scene->mNumMeshes; ++i)
+				TracyD3D12Zone(RenderContext.mCopyProfilingCtx, WorkerCommandList.Get(), "Copy Mesh Data from to GPU");
 				{
-					MeshData& Data = MeshDatas[i];
-					WorkerCommandList->CopyBufferRegion(Data.VertexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i], Data.VertexBufferView.SizeInBytes);
-					WorkerCommandList->CopyBufferRegion(Data.IndexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i] + Data.VertexBufferView.SizeInBytes, Data.IndexBufferView.SizeInBytes);
-
-					UploadTransitions.push_back(
-						CD3DX12_RESOURCE_BARRIER::Transition(
-							Data.VertexBuffer.Get(),
-							D3D12_RESOURCE_STATE_COPY_DEST,
-							D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER)
-					);
-
-					UploadTransitions.push_back(
-						CD3DX12_RESOURCE_BARRIER::Transition(
-							Data.IndexBuffer.Get(),
-							D3D12_RESOURCE_STATE_COPY_DEST,
-							D3D12_RESOURCE_STATE_INDEX_BUFFER)
-					);
+					ZoneScopedN("Fill command list for upload")
+					for (int i = 0; i < Scene->mNumMeshes; ++i)
+					{
+						MeshData& Data = MeshDatas[i];
+						WorkerCommandList->CopyBufferRegion(Data.VertexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i], Data.VertexBufferView.SizeInBytes);
+						WorkerCommandList->CopyBufferRegion(Data.IndexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i] + Data.VertexBufferView.SizeInBytes, Data.IndexBufferView.SizeInBytes);
+					}
 				}
 			}
 
@@ -282,7 +270,6 @@ int main(void)
 			VALIDATE(RenderContext.mCopyQueue->Signal(WorkerFrameFence.Get(), 1));
 			HANDLE WorkerWaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
-			ZoneScopedN("Wait for worker fence")
 			WaitForFenceValue(WorkerFrameFence, 1, WorkerWaitEvent);
 			CloseHandle(WorkerWaitEvent);
 			Counter.fetch_add(1);
@@ -290,44 +277,11 @@ int main(void)
 		return 0;
 	});
 
-	ComPtr<ID3D12RootSignature> RootSignature;
 	ComPtr<ID3D12PipelineState> PSO;
 	Render::TextureData Lena;
 
 	TaskGroup.run([&]()
 	{
-		{
-			CD3DX12_ROOT_PARAMETER Params[1] = {};
-
-			CD3DX12_DESCRIPTOR_RANGE Range(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
-			Params[0].InitAsDescriptorTable(1, &Range);
-
-			CD3DX12_STATIC_SAMPLER_DESC Samplers[2] = {};
-			Samplers[0].Init(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
-			Samplers[1].Init(1, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
-
-			CD3DX12_ROOT_SIGNATURE_DESC DescRootSignature;
-
-			DescRootSignature.Init(
-				ArraySize(Params), Params,
-				ArraySize(Samplers), Samplers,
-				D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
-			);
-
-			ComPtr<ID3DBlob> RootBlob;
-			ComPtr<ID3DBlob> ErrorBlob;
-			VALIDATE_D3D_WITH_BLOB(
-				D3D12SerializeRootSignature(
-					&DescRootSignature,
-					D3D_ROOT_SIGNATURE_VERSION_1,
-					&RootBlob,
-					&ErrorBlob),
-				ErrorBlob
-			);
-
-			RootSignature = RenderContext.CreateRootSignature(RootBlob);
-			RootSignature->SetName(L"RootSignature");
-		}
 
 		{
 			D3D12_INPUT_ELEMENT_DESC PSOLayout[] =
@@ -351,17 +305,19 @@ int main(void)
 			PSODesc.VS.pShaderBytecode = VertexShader->GetBufferPointer();
 			PSODesc.PS.BytecodeLength = PixelShader->GetBufferSize();
 			PSODesc.PS.pShaderBytecode = PixelShader->GetBufferPointer();
-			PSODesc.pRootSignature = RootSignature.Get();
+			PSODesc.pRootSignature = RenderContext.mRootSignature.Get();
 			PSODesc.NumRenderTargets = 1;
 			PSODesc.RTVFormats[0] = DXGI_FORMAT_R10G10B10A2_UNORM;
-			PSODesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+			PSODesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
 			PSODesc.InputLayout.NumElements = ArraySize(PSOLayout);
 			PSODesc.InputLayout.pInputElementDescs = PSOLayout;
 			PSODesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
 			PSODesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
 			PSODesc.SampleDesc.Count = 1;
-			PSODesc.DepthStencilState.DepthEnable = false;
+			PSODesc.DepthStencilState.DepthEnable = true;
 			PSODesc.DepthStencilState.StencilEnable = false;
+			PSODesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+			PSODesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 			PSODesc.SampleMask = 0xFFFFFFFF;
 			PSODesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 
@@ -381,16 +337,17 @@ int main(void)
 		return 0;
 	});
 
-	RenderContext.InitGUIResources(Gui.FontTexData.Texture);
+	RenderContext.InitGUIResources();
 	RenderContext.FlushUpload();
 
 	UINT64 CurrentFenceValue = 0;
 	UINT64 FrameFenceValues[3] = {};
 
-    //Main message loop
+	HANDLE WaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
 	while (!glfwWindowShouldClose(Window.mHandle))
 	{
-		FrameMark
+		FrameMark;
 
 		if (Counter == 2)
 		{
@@ -414,8 +371,11 @@ int main(void)
 		ComPtr<ID3D12Fence>& Fence = FrameFences[RenderContext.mCurrentBackBufferIndex];
 
 		WaitForFenceValue(Fence, FrameFenceValues[RenderContext.mCurrentBackBufferIndex], WaitEvent);
+
 		VALIDATE(CommandAllocator->Reset());
 		VALIDATE(CommandList->Reset(CommandAllocator.Get(), nullptr));
+
+		TracyD3D12NewFrame(RenderContext.mGraphicsProfilingCtx);
 
 		Window.Update();
 
@@ -429,34 +389,49 @@ int main(void)
 			CommandList->RSSetScissorRects(1, &Window.mScissorRect);
 
 			D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandleForBackBuffer();
+			D3D12_CPU_DESCRIPTOR_HANDLE dsv = RenderContext.GetDSVHandle();
 			CommandList->ResourceBarrier(1, &barrier);
-			CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
+			CommandList->OMSetRenderTargets(1, &rtv, true, &dsv);
 			{
 				FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
 				CommandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
 			}
+
+			CommandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 		}
 
 		// Mesh
 		if (Counter == 4)
 		{
+			TracyD3D12Zone(RenderContext.mGraphicsProfilingCtx, CommandList.Get(), "Render Meshes");
+
+			ZoneScopedN("Drawing meshes");
+
 			ImGui::Text("Draws mesh");
-			CommandList->SetGraphicsRootSignature(RootSignature.Get());
+			CommandList->SetGraphicsRootSignature(RenderContext.mRootSignature.Get());
 
 			RenderContext.BindDescriptors(CommandList);
 			CommandList->SetPipelineState(PSO.Get());
 			CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-			for (auto& Mesh : MeshDatas)
+			Matrix World = Matrix::CreateLookAt(Vector3(100, 100, 100), Vector3(0,0,0), Vector3(0,0,1));
+			for (auto& Mesh : Meshes)
 			{
-				auto Desc = Mesh.VertexBuffer->GetDesc();
-				CommandList->IASetVertexBuffers(0, 1, &Mesh.VertexBufferView);
-				CommandList->IASetIndexBuffer(&Mesh.IndexBufferView);
+				Matrix Combined = Matrix::CreatePerspective(Window.mSize.x, Window.mSize.y, 1, 10000) * World * Mesh.Transform;
+				CommandList->SetGraphicsRoot32BitConstants(1, 2, &Combined, 0);
+				for (UINT ID : Mesh.MeshIDs)
+				{
+					auto& MeshData = MeshDatas[ID];
 
-				CommandList->DrawIndexedInstanced(Mesh.IndexBufferView.SizeInBytes / 4, 1, 0, 0, 0);
+					auto Desc = MeshData.VertexBuffer->GetDesc();
+					CommandList->IASetVertexBuffers(0, 1, &MeshData.VertexBufferView);
+					CommandList->IASetIndexBuffer(&MeshData.IndexBufferView);
+
+					CommandList->DrawIndexedInstanced(MeshData.IndexBufferView.SizeInBytes / 4, 1, 0, 0, 0);
+				}
 			}
 		}
 
-		RenderContext.RenderGUI(CommandList, Window);
+		RenderContext.RenderGUI(CommandList, Window, Gui.FontTexData);
 
 		// Present
 		{
@@ -476,7 +451,5 @@ int main(void)
 	TaskGroup.wait();
 	Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex], CurrentFenceValue, WaitEvent);
 	CloseHandle(WaitEvent);
-
-	glfwTerminate();
 }
 

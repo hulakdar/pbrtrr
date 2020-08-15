@@ -28,9 +28,21 @@ public:
 		CHECK(mHwnd != nullptr, "Couldn't get HWND from GLFW window.");
 	}
 
+	void Deinit()
+	{
+		glfwDestroyWindow(mHandle);
+		mHandle = NULL;
+		glfwTerminate();
+		mHandle = NULL;
+	}
+
 	void Update()
 	{
 		glfwPollEvents();
+
+		double MouseX, MouseY;
+		glfwGetCursorPos(mHandle, &MouseX, &MouseY);
+
 		if (glfwGetKey(mHandle, GLFW_KEY_ESCAPE) == GLFW_PRESS)
 		{
 			glfwSetWindowShouldClose(mHandle, GLFW_TRUE);

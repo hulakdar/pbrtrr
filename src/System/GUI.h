@@ -22,6 +22,7 @@ public:
 		FontTexData.Data = StringView((char *)Data, FontTexData.Size.x * FontTexData.Size.y);
 		FontTexData.Format = DXGI_FORMAT_R8_UNORM;
 		FontTexData.Texture = RenderContext.CreateTexture(&FontTexData, 1);
+		FontTexData.SRVHeapIndex = RenderContext.CreateSRV(FontTexData);
 
 		io.IniFilename = NULL;
 		io.LogFilename = NULL;

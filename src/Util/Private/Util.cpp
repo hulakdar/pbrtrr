@@ -10,6 +10,7 @@ TMap<const char*, String> FileCache;
 
 void WaitForFenceValue(ComPtr<ID3D12Fence>& Fence, uint64_t FenceValue, HANDLE Event)
 {
+	ZoneScoped;
 	if (Fence->GetCompletedValue() < FenceValue)
 	{
 		VALIDATE(Fence->SetEventOnCompletion(FenceValue, Event));
@@ -27,12 +28,14 @@ uint64_t Signal(ComPtr<ID3D12CommandQueue>& CommandQueue, ComPtr<ID3D12Fence>& F
 
 void Flush(ComPtr<ID3D12CommandQueue>& CommandQueue, ComPtr<ID3D12Fence>& Fence, uint64_t& FenceValue, HANDLE FenceEvent)
 {
+	ZoneScoped;
 	uint64_t fenceValueForSignal = Signal(CommandQueue, Fence, FenceValue);
 	WaitForFenceValue(Fence, fenceValueForSignal, FenceEvent);
 }
 
 StringView LoadWholeFile(const char *Path)
 {
+	ZoneScoped;
 	auto CachedValue = FileCache.find(Path);
 	if (CachedValue != FileCache.end())
 	{

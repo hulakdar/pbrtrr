@@ -43,6 +43,7 @@ end
     floatingpoint "Fast"
     language "C++"
     staticruntime "Off"
+    stringpooling "on"
 	cppdialect "C++17"
     location "."
     warnings "Extra"
@@ -71,6 +72,7 @@ end
         "./src/**.hpp", "./src/**.tpp" }
 
     links {
+        -- d3d
         "d3dcompiler",
         "dxguid",
         "d3d12",
@@ -98,13 +100,13 @@ end
         "_CRT_SECURE_NO_WARNINGS",
         "WIN32",
         "_WINDOWS",
-        "TBB_USE_DEBUG",
         "GLFW_EXPOSE_NATIVE_WIN32"
     }
 
     filter "Debug"
         staticruntime "Off"
         defines {
+            "TBB_USE_DEBUG",
             "EA_DEBUG",
             "BUILD_DEBUG"
         }
