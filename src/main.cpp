@@ -136,19 +136,6 @@ int main(void)
 	System::GUI Gui;
 	Gui.Init(Window, RenderContext);
 
-	ComPtr<ID3D12CommandAllocator> CommandAllocators[3] = {};
-	ComPtr<ID3D12Fence> FrameFences[3] = {};
-	for (int i = 0; i < 3; ++i)
-	{
-		CommandAllocators[i] = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT);
-		FrameFences[i] = RenderContext.CreateFence();
-
-		SetD3DName(CommandAllocators[i], L"Command allocator %d", i);
-		SetD3DName(FrameFences[i], L"Fence %d", i);
-	}
-	ComPtr<ID3D12GraphicsCommandList> CommandList = RenderContext.CreateCommandList(CommandAllocators[0], D3D12_COMMAND_LIST_TYPE_DIRECT);
-	SetD3DName(CommandList, L"Command list");
-
 	Assimp::Importer Importer;
 
 
@@ -282,6 +269,7 @@ int main(void)
 
 	TaskGroup.run([&]()
 	{
+		ZoneScopedN("Create PSO")
 
 		{
 			D3D12_INPUT_ELEMENT_DESC PSOLayout[] =
@@ -329,8 +317,8 @@ int main(void)
 			Lena.Data = StringView((char *)Data, Lena.Size.x * Lena.Size.y * 4);
 			Lena.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 
-			Lena.Texture = RenderContext.CreateTexture(&Lena, 4);
-			Lena.SRVHeapIndex = RenderContext.CreateSRV(Lena);
+			RenderContext.CreateTexture(Lena, 4);
+			RenderContext.CreateSRV(Lena);
 			stbi_image_free((stbi_uc*)Lena.Data.data());
 		}
 		Counter.fetch_add(1);
@@ -344,6 +332,19 @@ int main(void)
 	UINT64 FrameFenceValues[3] = {};
 
 	HANDLE WaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+	ComPtr<ID3D12CommandAllocator> CommandAllocators[3] = {};
+	ComPtr<ID3D12Fence> FrameFences[3] = {};
+	for (int i = 0; i < 3; ++i)
+	{
+		CommandAllocators[i] = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT);
+		FrameFences[i] = RenderContext.CreateFence();
+
+		SetD3DName(CommandAllocators[i], L"Command allocator %d", i);
+		SetD3DName(FrameFences[i], L"Fence %d", i);
+	}
+	ComPtr<ID3D12GraphicsCommandList> CommandList = RenderContext.CreateCommandList(CommandAllocators[0], D3D12_COMMAND_LIST_TYPE_DIRECT);
+	SetD3DName(CommandList, L"Command list");
 
 	while (!glfwWindowShouldClose(Window.mHandle))
 	{

@@ -49,7 +49,7 @@ public:
 		}
 	}
 
-	Vector2				mSize{ 1920, 1080 };
+	Vector2				mSize{ 1600, 800 };
 	 
 	CD3DX12_VIEWPORT	mViewport = CD3DX12_VIEWPORT(0.f, 0.f, mSize.x, mSize.y);
 	CD3DX12_RECT		mScissorRect = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
