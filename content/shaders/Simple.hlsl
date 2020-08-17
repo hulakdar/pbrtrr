@@ -6,10 +6,10 @@ struct VertexShaderOutput
 
 struct PerFrameConstants
 {
-	float  Scale;
-	float  Padding;
-	float2 ScreenSize;
+	float4x4 MVP;
 };
+
+ConstantBuffer<PerFrameConstants> Constants : register(b0);
 
 VertexShaderOutput MainVS(
 	float4 position : POSITION,
@@ -17,7 +17,7 @@ VertexShaderOutput MainVS(
 {
 	VertexShaderOutput output;
 
-	output.Position = position;
+	output.Position = mul(position, Constants.MVP);
 	output.UV = uv;
 
 	return output;

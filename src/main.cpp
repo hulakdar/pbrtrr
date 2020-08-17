@@ -157,7 +157,7 @@ int main(void)
 			ZoneScopedN("Scene file parsing");
 
 			Scene = Importer.ReadFile(
-				"content/SunTemple/SunTemple.fbx",
+				"content/DamagedHelmet.glb",
 				aiProcess_ConvertToLeftHanded | aiProcessPreset_TargetRealtime_MaxQuality
 			);
 			CHECK_RETURN(Scene != nullptr, "Load failed", 0);
@@ -259,8 +259,9 @@ int main(void)
 
 			WaitForFenceValue(WorkerFrameFence, 1, WorkerWaitEvent);
 			CloseHandle(WorkerWaitEvent);
-			Counter.fetch_add(1);
+			RenderContext.FlushUpload();
 		}
+		Counter.fetch_add(1);
 		return 0;
 	});
 
@@ -269,8 +270,6 @@ int main(void)
 
 	TaskGroup.run([&]()
 	{
-		ZoneScopedN("Create PSO")
-
 		{
 			D3D12_INPUT_ELEMENT_DESC PSOLayout[] =
 			{
@@ -321,6 +320,7 @@ int main(void)
 			RenderContext.CreateSRV(Lena);
 			stbi_image_free((stbi_uc*)Lena.Data.data());
 		}
+		RenderContext.FlushUpload();
 		Counter.fetch_add(1);
 		return 0;
 	});
@@ -350,17 +350,6 @@ int main(void)
 	{
 		FrameMark;
 
-		if (Counter == 2)
-		{
-			Counter.fetch_add(1);
-			TaskGroup.run(
-				[&RenderContext, &Counter]()
-				{
-					RenderContext.FlushUpload();
-					Counter.fetch_add(1);
-				}
-			);
-		}
 
 		ImGui::NewFrame();
 
@@ -402,7 +391,7 @@ int main(void)
 		}
 
 		// Mesh
-		if (Counter == 4)
+		if (Counter == 2)
 		{
 			TracyD3D12Zone(RenderContext.mGraphicsProfilingCtx, CommandList.Get(), "Render Meshes");
 
@@ -414,11 +403,13 @@ int main(void)
 			RenderContext.BindDescriptors(CommandList);
 			CommandList->SetPipelineState(PSO.Get());
 			CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-			Matrix World = Matrix::CreateLookAt(Vector3(100, 100, 100), Vector3(0,0,0), Vector3(0,0,1));
 			for (auto& Mesh : Meshes)
 			{
-				Matrix Combined = Matrix::CreatePerspective(Window.mSize.x, Window.mSize.y, 1, 10000) * World * Mesh.Transform;
-				CommandList->SetGraphicsRoot32BitConstants(1, 2, &Combined, 0);
+				Matrix Combined = Matrix::Identity;
+				Combined *= Matrix::CreatePerspective(Window.mSize.x, Window.mSize.y, 0.01, 10000);
+				Combined *= Matrix::CreateLookAt(Vector3(0, 0, -3), Vector3(0, 0, 0), Vector3(0, 0, 1));
+				//Combined *= Mesh.Transform;
+				CommandList->SetGraphicsRoot32BitConstants(1, 16, &Combined, 0);
 				for (UINT ID : Mesh.MeshIDs)
 				{
 					auto& MeshData = MeshDatas[ID];
