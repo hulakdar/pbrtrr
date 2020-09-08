@@ -17,7 +17,7 @@ VertexShaderOutput MainVS(
 {
 	VertexShaderOutput output;
 
-	output.Position = mul(position, Constants.MVP);
+	output.Position = mul(Constants.MVP, position);
 	output.UV = uv;
 
 	return output;
