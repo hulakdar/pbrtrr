@@ -3,8 +3,6 @@
 #include "external/d3dx12.h"
 #include <SimpleMath.h>
 
-// THIS IS HACK. I KNOW IT.
-using namespace DirectX::SimpleMath;
 
 using IVector2 = DirectX::XMINT2;
 using IVector3 = DirectX::XMINT3;
@@ -12,6 +10,8 @@ using IVector4 = DirectX::XMINT4;
 
 namespace Math
 {
+	using namespace DirectX::SimpleMath;
+
     template<typename T>
     T Max(T& a, T& b) { return a > b ? a : b; }
 }

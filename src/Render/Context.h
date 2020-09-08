@@ -68,41 +68,47 @@ public:
 
 	ComPtr<ID3D12Device>		mDevice;
 	ComPtr<ID3D12CommandQueue>	mGraphicsQueue;
+	ComPtr<ID3D12CommandQueue>	mComputeQueue;
 	ComPtr<ID3D12CommandQueue>	mCopyQueue;
 	ComPtr<ID3D12RootSignature> mRootSignature;
 
 	ComPtr<ID3D12Resource>		mBackBuffers[BUFFER_COUNT];
 
 	TracyD3D12Ctx	mGraphicsProfilingCtx;
+	TracyD3D12Ctx	mComputeProfilingCtx;
 	TracyD3D12Ctx	mCopyProfilingCtx;
 
 	UINT mCurrentBackBufferIndex = 0;
 	UINT mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES];
 
-	void Init(System::Window& Window)
+	void CreateBackBufferResources(System::Window& Window)
 	{
-		ZoneScoped;
-		mDXGIFactory = CreateFactory();
-		mDevice = CreateDevice();
-
-		for (int i = 0; i < ArraySize(mDescriptorSizes); ++i)
-		{
-			mDescriptorSizes[i] = mDevice->GetDescriptorHandleIncrementSize((D3D12_DESCRIPTOR_HEAP_TYPE)i);
-		}
-		mGraphicsQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_DIRECT);
-		mGraphicsProfilingCtx = TracyD3D12Context(mDevice.Get(), mGraphicsQueue.Get());
-		mCopyQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_COPY);
-		mCopyProfilingCtx = TracyD3D12Context(mDevice.Get(), mCopyQueue.Get());
-
 		DXGI_SWAP_CHAIN_FLAG SwapChainFlag = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
-		//mTearingSupported = CheckTearingSupport(mDXGIFactory);
+		mTearingSupported = false;// CheckTearingSupport(mDXGIFactory);
 		if (mTearingSupported)
 		{
 			SwapChainFlag = (DXGI_SWAP_CHAIN_FLAG)(SwapChainFlag | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
 		}
 
-		mSwapChain = CreateSwapChain(Window, SwapChainFlag);
+		for (int i = 0; i < BUFFER_COUNT; ++i)
+		{
+			mBackBuffers[i].Reset();
+		}
+
+		if (mSwapChain)
+		{
+			mSwapChain->ResizeBuffers(
+				3,
+				Window.mSize.x, Window.mSize.y,
+				DXGI_FORMAT_R10G10B10A2_UNORM,
+				SwapChainFlag
+			);
+		}
+		else
+		{
+			mSwapChain = CreateSwapChain(Window, SwapChainFlag);
+		}
 
 		D3D12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
 			DXGI_FORMAT_D24_UNORM_S8_UINT,
@@ -116,11 +122,33 @@ public:
 		ClearValue.DepthStencil.Depth = 1.0f;
 
 		mDepthBuffer = CreateResource(&TextureDesc, &Render::Context::DefaultHeapProps, D3D12_RESOURCE_STATE_DEPTH_WRITE, &ClearValue);
+		mDSVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
+		UpdateRenderTargetViews();
+
+		mCurrentBackBufferIndex = 0;
+	}
+
+	void Init(System::Window& Window)
+	{
+		ZoneScoped;
+		mDXGIFactory = CreateFactory();
+		mDevice = CreateDevice();
+
+		for (int i = 0; i < ArraySize(mDescriptorSizes); ++i)
+		{
+			mDescriptorSizes[i] = mDevice->GetDescriptorHandleIncrementSize((D3D12_DESCRIPTOR_HEAP_TYPE)i);
+		}
+		mGraphicsQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_DIRECT);
+		mGraphicsProfilingCtx = TracyD3D12Context(mDevice.Get(), mGraphicsQueue.Get());
+		mComputeQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_COMPUTE	);
+		mComputeProfilingCtx = TracyD3D12Context(mDevice.Get(), mComputeQueue.Get());
+		mCopyQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_COPY);
+		mCopyProfilingCtx = TracyD3D12Context(mDevice.Get(), mCopyQueue.Get());
 
 		mRTVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, BUFFER_COUNT);
-		mDSVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
+		CreateBackBufferResources(Window);
+
 		mSRVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, SRV_HEAP_SIZE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
-		UpdateRenderTargetViews();
 
 		if (mTearingSupported)
 		{
@@ -167,6 +195,7 @@ public:
 	void Deinit()
 	{
 		TracyD3D12Destroy(mGraphicsProfilingCtx);
+		TracyD3D12Destroy(mComputeProfilingCtx);
 		TracyD3D12Destroy(mCopyProfilingCtx);
 	}
 
@@ -189,8 +218,6 @@ public:
 
 		TexData.SRVHeapIndex = mCurrentSRVIndex++;
 	}
-
-#pragma region Upload
 
 	inline static const UINT64	UPLOAD_BUFFER_SIZE = 8_mb;
 	inline static const UINT	UPLOAD_BUFFERS = 3;
@@ -217,13 +244,13 @@ public:
 
 		for (int i = 0; i < UPLOAD_BUFFERS; ++i)
 		{
-			mUploadCommandAllocators[i] = CreateCommandAllocator();
+			mUploadCommandAllocators[i] = CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY);
 			VALIDATE(mUploadCommandAllocators[i]->Reset());
 			mUploadBuffers[i].push_back(CreateBuffer(UPLOAD_BUFFER_SIZE, true));
 			mUploadFences[i] = CreateFence();
 		}
 
-		mUploadCommandList = CreateCommandList(mUploadCommandAllocators[0], D3D12_COMMAND_LIST_TYPE_DIRECT);
+		mUploadCommandList = CreateCommandList(mUploadCommandAllocators[0], D3D12_COMMAND_LIST_TYPE_COPY);
 		VALIDATE(mUploadCommandList->Reset(mUploadCommandAllocators[0].Get(), nullptr));
 
 		VALIDATE(mUploadBuffers[0][0]->Map(0, nullptr, (void**)&mUploadBufferAddress));
@@ -239,14 +266,14 @@ public:
 			return;
 		}
 
-		mUploadCommandList->ResourceBarrier((UINT)mUploadTransitions.size(), mUploadTransitions.data());
+		//mUploadCommandList->ResourceBarrier((UINT)mUploadTransitions.size(), mUploadTransitions.data());
 		VALIDATE(mUploadCommandList->Close());
 
 		ID3D12CommandList* CommandListsForSubmission[] = { mUploadCommandList.Get() };
-		mGraphicsQueue->ExecuteCommandLists(ArraySize(CommandListsForSubmission), CommandListsForSubmission);
+		mCopyQueue->ExecuteCommandLists(ArraySize(CommandListsForSubmission), CommandListsForSubmission);
 
 		mUploadFenceValues[mCurrentUploadBufferIndex] = Signal(
-			mGraphicsQueue,
+			mCopyQueue,
 			mUploadFences[mCurrentUploadBufferIndex],
 			mCurrentUploadFenceValue
 		);
@@ -584,6 +611,10 @@ public:
 		UINT64& WatermarkIndex = ImIndexHighwatermarks[mCurrentBackBufferIndex];
 
 		ImDrawData *DrawData = ImGui::GetDrawData();
+		if (!DrawData || DrawData->TotalVtxCount == 0)
+		{
+			return;
+		}
 
 		UINT64 VertexBufferSize = DrawData->TotalVtxCount * sizeof(ImDrawVert);
 		if (VertexBufferSize > WatermarkVertex)
@@ -699,17 +730,24 @@ public:
 		return rtv;
 	}
 
-	void BindDescriptors(ComPtr<ID3D12GraphicsCommandList>& CommandList)
+	void BindDescriptors(ComPtr<ID3D12GraphicsCommandList>& CommandList, TextureData& Tex)
 	{
 		ZoneScoped;
 		ID3D12DescriptorHeap* DescriptorHeaps[] = {
 			mSRVDescriptorHeap.Get()
 		};
 
+		CD3DX12_GPU_DESCRIPTOR_HANDLE  GpuHandle(
+			mSRVDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
+			Tex.SRVHeapIndex,
+			mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV]
+		);
+
+		CommandList->SetGraphicsRootSignature(mRootSignature.Get());
 		CommandList->SetDescriptorHeaps(ArraySize(DescriptorHeaps), DescriptorHeaps);
 		CommandList->SetGraphicsRootDescriptorTable(
 			0,
-			mSRVDescriptorHeap->GetGPUDescriptorHandleForHeapStart()
+			GpuHandle
 		);
 	}
 
@@ -732,7 +770,7 @@ private:
 	TracyLockable(Mutex, mUploadMutex);
 
 	bool mTearingSupported = false;
-	UINT mSyncInterval = 2;
+	UINT mSyncInterval = 1;
 	UINT mPresentFlags = 0;
 	ComPtr<IDXGISwapChain1>		mSwapChain;
 	ComPtr<ID3D12Resource>		mDepthBuffer;
@@ -742,14 +780,14 @@ private:
 	ComPtr<ID3D12DescriptorHeap> mDSVDescriptorHeap;
 	ComPtr<ID3D12DescriptorHeap> mSRVDescriptorHeap;
 
-	ComPtr<IDXGISwapChain1> CreateSwapChain(System::Window Window, DXGI_SWAP_CHAIN_FLAG Flags)
+	ComPtr<IDXGISwapChain1> CreateSwapChain(System::Window& Window, DXGI_SWAP_CHAIN_FLAG Flags)
 	{
 		ZoneScoped;
 		ComPtr<IDXGISwapChain1> Result;
 
 		DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-		swapChainDesc.Width = (UINT)Window.mViewport.Width;
-		swapChainDesc.Height = (UINT)Window.mViewport.Height;
+		swapChainDesc.Width = (UINT)Window.mSize.x;
+		swapChainDesc.Height = (UINT)Window.mSize.y;
 		swapChainDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
 		swapChainDesc.Scaling = DXGI_SCALING_NONE;
 		swapChainDesc.SampleDesc.Quality = 0;

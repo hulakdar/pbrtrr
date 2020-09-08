@@ -28,10 +28,9 @@ struct MeshData
 	D3D12_INDEX_BUFFER_VIEW		IndexBufferView;
 };
 
-MeshData AllocateMeshData(aiMesh* Mesh, Render::Context& RenderContext)
+void AllocateMeshData(aiMesh* Mesh, Render::Context& RenderContext, MeshData& Result)
 {
-	MeshData Result;
-	CHECK_RETURN(Mesh->HasFaces(), "Mesh without faces?", Result);
+	CHECK(Mesh->HasFaces(), "Mesh without faces?");
 
 	UINT64 VertexSize = sizeof(aiVector3D);
 	UINT64 UVSets = 0;
@@ -70,8 +69,6 @@ MeshData AllocateMeshData(aiMesh* Mesh, Render::Context& RenderContext)
 	Result.IndexBufferView.BufferLocation = Result.IndexBuffer->GetGPUVirtualAddress();
 	Result.IndexBufferView.SizeInBytes = IndexBufferSize;
 	Result.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
-
-	return Result;
 }
 
 void UploadMeshData(unsigned char* CpuPtr, aiMesh* Mesh)
@@ -118,6 +115,7 @@ void UploadMeshData(unsigned char* CpuPtr, aiMesh* Mesh)
 
 	for (int i = 0; i < Mesh->mNumFaces; ++i)
 	{
+		CHECK(Mesh->mFaces[i].mNumIndices == 3, "Not triangles?");
 		::memcpy(CpuPtr, Mesh->mFaces[i].mIndices, 3 * sizeof(unsigned int));
 		CpuPtr += 3 * sizeof(unsigned int);
 	}
@@ -138,10 +136,10 @@ int main(void)
 
 	Assimp::Importer Importer;
 
-
 	struct Mesh
 	{
-		Matrix	Transform;
+		String Name;
+		Math::Matrix Transform;
 		TArray<UINT> MeshIDs;
 	};
 	TArray<MeshData> MeshDatas;
@@ -157,8 +155,8 @@ int main(void)
 			ZoneScopedN("Scene file parsing");
 
 			Scene = Importer.ReadFile(
-				"content/DamagedHelmet.glb",
-				aiProcess_ConvertToLeftHanded | aiProcessPreset_TargetRealtime_MaxQuality
+				"content/Bistro/BistroExterior.fbx",
+				aiProcess_FlipWindingOrder | aiProcessPreset_TargetRealtime_Quality
 			);
 			CHECK_RETURN(Scene != nullptr, "Load failed", 0);
 		}
@@ -174,7 +172,9 @@ int main(void)
 				for (unsigned int i = 0; i < Scene->mNumMeshes; ++i)
 				{
 					aiMesh* Mesh = Scene->mMeshes[i];
-					MeshData Tmp = AllocateMeshData(Mesh, RenderContext);
+					MeshData& Tmp = MeshDatas[i];
+					AllocateMeshData(Mesh, RenderContext, Tmp);
+
 					UploadOffsets[i] = UploadBufferSize;
 					UploadBufferSize += Tmp.IndexBufferView.SizeInBytes + Tmp.VertexBufferView.SizeInBytes;
 					MeshDatas[i] = Tmp;
@@ -203,35 +203,50 @@ int main(void)
 				UploadBuffer->Unmap(0, NULL);
 			}
 
-			TQueue<aiNode*> ProcessingQueue;
-			ProcessingQueue.push(Scene->mRootNode);
+			TaskGroup.run([&]() {
+				using namespace Math;
+				using namespace std;
 
-			while (!ProcessingQueue.empty())
-			{
-				ZoneScopedN("Pump mesh queue")
-				aiNode* Current = ProcessingQueue.front();
-				ProcessingQueue.pop();
-				for (int i = 0; i < Current->mNumChildren; ++i)
+				TQueue<pair<aiNode*, aiMatrix4x4>> ProcessingQueue;
+				ProcessingQueue.emplace(Scene->mRootNode, aiMatrix4x4());
+
+				Meshes.reserve(Scene->mNumMeshes);
+				while (!ProcessingQueue.empty())
 				{
-					ProcessingQueue.push(Current->mChildren[i]);
-				}
+					ZoneScopedN("Pump mesh queue")
+					aiNode* Current = ProcessingQueue.front().first;
+					aiMatrix4x4 ParentTransform = ProcessingQueue.front().second;
+					ProcessingQueue.pop();
 
-				TArray<UINT> MeshIDs;
-				MeshIDs.reserve(Current->mNumMeshes);
-				for (int i = 0; i < Current->mNumMeshes; ++i)
-				{
-					unsigned int MeshID = Current->mMeshes[i];
-					MeshIDs.push_back(MeshID);
-				}
-
-				Meshes.push_back(
-					Mesh
+					aiMatrix4x4 CurrentTransform = ParentTransform * Current->mTransformation;
+					for (int i = 0; i < Current->mNumChildren; ++i)
 					{
-						Matrix(Current->mTransformation[0]),
-						MOVE(MeshIDs)
+						ProcessingQueue.emplace(Current->mChildren[i], CurrentTransform);
 					}
-				);
-			}
+
+					if (Current->mNumMeshes > 0)
+					{
+						TArray<UINT> MeshIDs;
+						MeshIDs.reserve(Current->mNumMeshes);
+						for (int i = 0; i < Current->mNumMeshes; ++i)
+						{
+							unsigned int MeshID = Current->mMeshes[i];
+							MeshIDs.push_back(MeshID);
+						}
+
+						CurrentTransform.Transpose();
+						Meshes.push_back(
+							Mesh
+							{
+								String(Current->mName.C_Str()),
+								Math::Matrix(CurrentTransform[0]),
+								MOVE(MeshIDs)
+							}
+						);
+					}
+				}
+				Counter.fetch_add(1);
+			});
 
 			ComPtr<ID3D12CommandAllocator> WorkerCommandAllocator = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY);
 			ComPtr<ID3D12GraphicsCommandList> WorkerCommandList = RenderContext.CreateCommandList(WorkerCommandAllocator, D3D12_COMMAND_LIST_TYPE_COPY);
@@ -350,11 +365,35 @@ int main(void)
 	{
 		FrameMark;
 
+		Window.Update();
+		if (Window.mWindowStateDirty)
+		{
+			Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex], CurrentFenceValue, WaitEvent);
+			RenderContext.CreateBackBufferResources(Window);
+			Window.mWindowStateDirty = false;
+		}
 
-		ImGui::NewFrame();
+		Gui.Update(Window);
 
 		static bool ShowDemo = true;
 		ImGui::ShowDemoWindow(&ShowDemo);
+
+		ImGui::Begin("Meshes");
+		for (auto& Mesh : Meshes)
+		{
+			Math::Vector3 Location, Scale;
+			Math::Quaternion Rotation;
+			Mesh.Transform.Decompose(Scale, Rotation, Location);
+
+			ImGui::BeginGroup();
+			ImGui::TextUnformatted(Mesh.Name.c_str());
+			ImGui::Text("Location: %f %f %f", Location.x, Location.y, Location.z);
+			ImGui::Text("Scale:    %f %f %f", Scale.x, Scale.y, Scale.z);
+			ImGui::Text("Rotation: %f %f %f %f", Rotation.x, Rotation.y, Rotation.z, Rotation.w);
+			ImGui::Text("MeshIDs: %d", Mesh.MeshIDs.size());
+			ImGui::EndGroup();
+		}
+		ImGui::End();
 
 		ComPtr<ID3D12Resource>& BackBuffer = RenderContext.mBackBuffers[RenderContext.mCurrentBackBufferIndex];
 		ComPtr<ID3D12CommandAllocator>& CommandAllocator = CommandAllocators[RenderContext.mCurrentBackBufferIndex];
@@ -366,8 +405,6 @@ int main(void)
 		VALIDATE(CommandList->Reset(CommandAllocator.Get(), nullptr));
 
 		TracyD3D12NewFrame(RenderContext.mGraphicsProfilingCtx);
-
-		Window.Update();
 
 		// Clear the render target.
 		{
@@ -391,24 +428,44 @@ int main(void)
 		}
 
 		// Mesh
-		if (Counter == 2)
+		if (Counter == 3)
 		{
+			using namespace Math;
+			static float Fov = 60;
+			static float Near = 0.1;
+			static float Far = 1000000;
+			static Vector3 Eye(0, 10, 1);
+			static Vector2 Angles(0, 0);
+			
+			ImGui::SliderFloat("FOV", &Fov, 1, 180);
+			ImGui::SliderFloat("Near", &Near, 0.01, 1);
+			ImGui::SliderFloat("Far", &Far, 10000, 1000000);
+			ImGui::DragFloat3("Eye", &Eye.x);
+			ImGui::DragFloat2("Target", &Angles.x, 0.05);
+
 			TracyD3D12Zone(RenderContext.mGraphicsProfilingCtx, CommandList.Get(), "Render Meshes");
 
 			ZoneScopedN("Drawing meshes");
 
-			ImGui::Text("Draws mesh");
-			CommandList->SetGraphicsRootSignature(RenderContext.mRootSignature.Get());
+			RenderContext.BindDescriptors(CommandList, Lena);
 
-			RenderContext.BindDescriptors(CommandList);
 			CommandList->SetPipelineState(PSO.Get());
 			CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 			for (auto& Mesh : Meshes)
 			{
-				Matrix Combined = Matrix::Identity;
-				Combined *= Matrix::CreatePerspective(Window.mSize.x, Window.mSize.y, 0.01, 10000);
-				Combined *= Matrix::CreateLookAt(Vector3(0, 0, -3), Vector3(0, 0, 0), Vector3(0, 0, 1));
-				//Combined *= Mesh.Transform;
+				Matrix Combined = Mesh.Transform;
+
+				Combined *= Matrix::CreateTranslation(-Eye);
+
+				Matrix Rotation = Matrix::CreateRotationY(Angles.x) * Matrix::CreateRotationX(Angles.y);
+
+				Vector2 Front = Vector3::Transform(Vector3(1, 0, 0), Rotation);
+				Vector2 Right  = Vector3::Transform(Vector3(0, 1, 0), Rotation);
+				Vector2 Up	   = Vector3::Transform(Vector3(0, 0, 1), Rotation);
+
+				Combined *= Rotation;
+				Combined *= Matrix::CreatePerspectiveFieldOfView(Math::Radians(Fov), Window.mSize.x / Window.mSize.y, Near, Far);
+				//Combined *= Matrix(DirectX::XMMatrixPerspectiveFovLH(Math::Radians(Fov), Window.mSize.x / Window.mSize.y, Near, Far));
 				CommandList->SetGraphicsRoot32BitConstants(1, 16, &Combined, 0);
 				for (UINT ID : Mesh.MeshIDs)
 				{

@@ -3,6 +3,12 @@
 
 #include "System/Window.h"
 
+template<typename T>
+inline ImVec2 ToImVec2(T Vec)
+{
+	return ImVec2(Vec.x, Vec.y);
+}
+
 namespace System
 {
 
@@ -28,6 +34,23 @@ public:
 		io.LogFilename = NULL;
 		io.WantSaveIniSettings = false;
 		io.WantTextInput = false;
+	}
+
+	void Update(const Window& WindowHandle)
+	{
+		ImGuiIO& io = ImGui::GetIO();
+		io.DisplaySize = ToImVec2(WindowHandle.mSize);
+		io.MousePos = ToImVec2(WindowHandle.mMousePosition);
+
+		for (int i = 0; i < WindowHandle.mMouseButtons.size(); ++i)
+		{
+			io.MouseDown[i] = WindowHandle.mMouseButtons[i];
+		}
+
+		io.MouseWheel = WindowHandle.mScrollOffset.y;
+		io.MouseWheelH = WindowHandle.mScrollOffset.x;
+
+		ImGui::NewFrame();
 	}
 
 	Render::TextureData FontTexData;
