@@ -106,6 +106,7 @@ end
     filter "Debug"
         staticruntime "Off"
         defines {
+            "GLFW_INCLUDE_NONE",
             "TBB_USE_DEBUG",
             "EA_DEBUG",
             "BUILD_DEBUG"
