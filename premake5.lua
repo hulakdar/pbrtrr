@@ -68,6 +68,7 @@ end
 
     files {
         "./thirdparty/tracy/TracyClient.cpp",
+        "./thirdparty/EASTL/EASTL.natvis",
         "./src/**.h",   "./src/**.cpp",
         "./src/**.hpp", "./src/**.tpp" }
 
