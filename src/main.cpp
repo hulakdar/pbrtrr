@@ -150,15 +150,34 @@ int main(void)
 	tbb::task_group TaskGroup;
 	TaskGroup.run([&]()
 	{
+		using namespace tbb;
+
 		const aiScene* Scene = nullptr;
 		{
 			ZoneScopedN("Scene file parsing");
 
 			Scene = Importer.ReadFile(
-				"content/Bistro/BistroExterior.fbx",
+				"content/DamagedHelmet.glb",
 				aiProcess_FlipWindingOrder | aiProcessPreset_TargetRealtime_Quality
 			);
 			CHECK_RETURN(Scene != nullptr, "Load failed", 0);
+		}
+
+		if (Scene->HasMaterials())
+		{
+			TaskGroup.run([&]() {
+				for (UINT i = 0; i < Scene->mNumMaterials; ++i)
+				{
+					aiMaterial* Material = Scene->mMaterials[i];
+					for (UINT j = 0; j < Material->GetTextureCount(aiTextureType_DIFFUSE); ++j)
+					{
+						aiString TexPath;
+						Material->GetTexture(aiTextureType_DIFFUSE, j, &TexPath);
+						aiString MatName = Material->GetName();
+						continue;
+					}
+				}
+			});
 		}
 
 		{
@@ -184,9 +203,6 @@ int main(void)
 
 				unsigned char* CpuPtr = NULL;
 				UploadBuffer->Map(0, NULL, (void**)&CpuPtr);
-
-				using namespace tbb;
-
 				parallel_for(
 					blocked_range(0U, Scene->mNumMeshes),
 					[Scene, CpuPtr, &UploadOffsets](blocked_range<unsigned int>& range)
@@ -434,7 +450,7 @@ int main(void)
 			static float Fov = 60;
 			static float Near = 0.1;
 			static float Far = 1000000;
-			static Vector3 Eye(0, 10, 1);
+			static Vector3 Eye(0, 0, 2);
 			static Vector2 Angles(0, 0);
 			
 			ImGui::SliderFloat("FOV", &Fov, 1, 180);
