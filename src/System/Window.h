@@ -8,6 +8,7 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 #include <bitset>
+#include <Tracy.hpp>
 
 #define VALIDATE_GLFW_CALL(x) if (!(x)) { const char* Error; glfwGetError(&Error); Debug::Print("Error during:", #x, Error); }
 
@@ -31,6 +32,7 @@ class Window
 public:
 	void Init()
 	{
+		ZoneScoped;
 		VALIDATE_GLFW_CALL(glfwInit());
 
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -51,6 +53,7 @@ public:
 
 	void Deinit()
 	{
+		ZoneScoped;
 		glfwDestroyWindow(mHandle);
 		mHandle = NULL;
 		glfwTerminate();
@@ -59,6 +62,7 @@ public:
 
 	void Update()
 	{
+		ZoneScoped;
 		mScrollOffset = Vector2(0, 0);
 		mKeyboard.reset();
 
@@ -91,6 +95,7 @@ public:
 private:
 	void UpdateInput()
 	{
+		ZoneScoped;
 		double MouseX, MouseY;
 		glfwGetCursorPos(mHandle, &MouseX, &MouseY);
 		mMousePosition = Vector2(MouseX, MouseY);

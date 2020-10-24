@@ -27,7 +27,7 @@ public:
 		io.Fonts->GetTexDataAsAlpha8(&Data, &FontTexData.Size.x, &FontTexData.Size.y);
 		FontTexData.Data = StringView((char *)Data, FontTexData.Size.x * FontTexData.Size.y);
 		FontTexData.Format = DXGI_FORMAT_R8_UNORM;
-		RenderContext.CreateTexture(FontTexData, 1);
+		RenderContext.CreateTexture(FontTexData);
 		RenderContext.CreateSRV(FontTexData);
 
 		io.IniFilename = NULL;
@@ -49,8 +49,6 @@ public:
 
 		io.MouseWheel = WindowHandle.mScrollOffset.y;
 		io.MouseWheelH = WindowHandle.mScrollOffset.x;
-
-		ImGui::NewFrame();
 	}
 
 	Render::TextureData FontTexData;
