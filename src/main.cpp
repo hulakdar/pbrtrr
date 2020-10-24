@@ -514,6 +514,15 @@ int main(void)
 			CommandList->RSSetViewports(1, &Window.mViewport);
 			CommandList->RSSetScissorRects(1, &Window.mScissorRect);
 
+			{
+				D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandleForBackBuffer();
+				CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
+				{
+					FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
+					CommandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
+				}
+			}
+
 			D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandle(RenderContext.mSceneColor.RTVIndex);
 			D3D12_CPU_DESCRIPTOR_HANDLE dsv = RenderContext.GetDSVHandle();
 			CommandList->OMSetRenderTargets(1, &rtv, true, &dsv);
@@ -596,7 +605,9 @@ int main(void)
 				D3D12_GPU_DESCRIPTOR_HANDLE SceneColorReadbackUAV = RenderContext.GetGeneralHandleGPU(RenderContext.mSceneColorReadback.UAVIndex);
 				CommandList->SetComputeRootDescriptorTable(1, SceneColorReadbackUAV);
 			}
-			CommandList->Dispatch(960, 540, 1);
+
+			IVector2 Size = RenderContext.mSceneColorReadback.Size;
+			CommandList->Dispatch(Size.x, Size.y, 1);
 		}
 #endif
 
@@ -614,7 +625,7 @@ int main(void)
 			FrameFenceValues[RenderContext.mCurrentBackBufferIndex] = RenderContext.ExecuteGraphics(CommandList.Get(), Fence, CurrentFenceValue);
 			RenderContext.Present();
 		}
-		RenderContext.mCurrentBackBufferIndex = (RenderContext.mCurrentBackBufferIndex + 1) % 3;
+		RenderContext.mCurrentBackBufferIndex = (RenderContext.mCurrentBackBufferIndex + 1) % Render::Context::BUFFER_COUNT;
 	}
 
 	Importer.SetProgressHandler(nullptr);

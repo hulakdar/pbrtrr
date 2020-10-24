@@ -7,7 +7,7 @@ SamplerState BilinearSampler : register(s0);
 void Main( uint3 DTid : SV_DispatchThreadID )
 {
 	uint Width, Height;
-	Input.GetDimensions(Width, Height);
+	Output.GetDimensions(Width, Height);
 	float2 UV = float2(DTid.x / (float)Width, DTid.y / (float)Height);
-	Output[DTid.xy] = Input.Gather(BilinearSampler, UV);
+	Output[DTid.xy] = Input.SampleLevel(BilinearSampler, UV, 0);
 }

@@ -130,15 +130,14 @@ inline UINT ComponentCountFromFormat(DXGI_FORMAT Format)
 struct TextureData
 {
 	ComPtr<ID3D12Resource>	Resource;
-	D3D12_CLEAR_VALUE	DefaultClear;
 
-	StringView	Data;
-	String		Name;
-	IVector2	Size;
-	DXGI_FORMAT	Format;
-	UINT		SRVIndex;
-	UINT		UAVIndex;
-	UINT		RTVIndex;
+	StringView	Data = {};
+	String		Name = {};
+	IVector2	Size = {};
+	DXGI_FORMAT	Format = DXGI_FORMAT_UNKNOWN;
+	UINT		SRVIndex = UINT_MAX;
+	UINT		UAVIndex = UINT_MAX;
+	UINT		RTVIndex = UINT_MAX;
 };
 
 class Context
@@ -226,12 +225,13 @@ public:
 				D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
 				D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
 			);
+			CreateSRV(mSceneColor);
 			CreateRTV(mSceneColor);
 		}
 
 		{
 			mSceneColorReadback.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-			mSceneColorReadback.Size = IVector2(Window.mSize.x / 2, Window.mSize.y / 2);
+			mSceneColorReadback.Size = IVector2(960, 540);
 			CreateTexture(mSceneColorReadback,
 				D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
 				D3D12_RESOURCE_STATE_UNORDERED_ACCESS
@@ -665,8 +665,7 @@ public:
 			Flags
 		);
 
-		TexData.DefaultClear.Format = TexData.Format;
-		TexData.Resource = CreateResource(&TextureDesc, &Render::Context::DefaultHeapProps, InitialState, &TexData.DefaultClear);
+		TexData.Resource = CreateResource(&TextureDesc, &Render::Context::DefaultHeapProps, InitialState);
 
 		if (TexData.Data.data())
 		{
@@ -934,7 +933,7 @@ public:
 	D3D12_GPU_DESCRIPTOR_HANDLE GetGeneralHandleGPU(UINT Index)
 	{
 		CD3DX12_GPU_DESCRIPTOR_HANDLE rtv(mGeneralDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
-			mCurrentBackBufferIndex, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
+			Index, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV]);
 
 		return rtv;
 	}
@@ -942,7 +941,7 @@ public:
 	D3D12_CPU_DESCRIPTOR_HANDLE GetGeneralHandle(UINT Index)
 	{
 		CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(mGeneralDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-			mCurrentBackBufferIndex, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
+			Index, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV]);
 
 		return rtv;
 	}
@@ -1136,6 +1135,42 @@ private:
 			VALIDATE(mDXGIFactory->EnumWarpAdapter(IID_PPV_ARGS(&Adapter)));
 			VALIDATE(D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&Result)));
 		}
+
+		#ifdef _DEBUG
+		ComPtr<ID3D12InfoQueue> pInfoQueue;
+		if (SUCCEEDED(Result.As(&pInfoQueue)))
+		{
+			pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+			pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+			pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
+
+			// Suppress whole categories of messages
+			//D3D12_MESSAGE_CATEGORY Categories[] = {};
+	 
+			// Suppress messages based on their severity level
+			D3D12_MESSAGE_SEVERITY Severities[] =
+			{
+				D3D12_MESSAGE_SEVERITY_INFO
+			};
+	 
+			// Suppress individual messages by their ID
+			D3D12_MESSAGE_ID DenyIds[] = {
+				D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,   // I'm really not sure how to avoid this message.
+				D3D12_MESSAGE_ID_MAP_INVALID_NULLRANGE,                         // This warning occurs when using capture frame while graphics debugging.
+				D3D12_MESSAGE_ID_UNMAP_INVALID_NULLRANGE,                       // This warning occurs when using capture frame while graphics debugging.
+			};
+	 
+			D3D12_INFO_QUEUE_FILTER NewFilter = {};
+			//NewFilter.DenyList.NumCategories = _countof(Categories);
+			//NewFilter.DenyList.pCategoryList = Categories;
+			NewFilter.DenyList.NumSeverities = _countof(Severities);
+			NewFilter.DenyList.pSeverityList = Severities;
+			NewFilter.DenyList.NumIDs = _countof(DenyIds);
+			NewFilter.DenyList.pIDList = DenyIds;
+	 
+			VALIDATE(pInfoQueue->PushStorageFilter(&NewFilter));
+		}
+		#endif
 
 		return Result;
 	}
