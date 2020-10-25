@@ -48,7 +48,7 @@ Render::TextureData ParseTexture(aiTexture* Texture)
 			(stbi_uc*)Texture->pcData,
 			Texture->mWidth,
 			&Result.Size.x, &Result.Size.y,
-			&Channels, 0);
+			&Channels, 4);
 
 		Result.Data = StringView((char *)Data, Result.Size.x * Result.Size.y * Channels);
 		Result.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
@@ -218,19 +218,6 @@ int main(void)
 
 		if (Scene->HasMaterials())
 		{
-			if (Scene->HasTextures())
-			{
-				TaskGroup.run([&]() {
-					for (UINT i = 0; i < Scene->mNumTextures; ++i)
-					{
-						Render::TextureData& CurrentTex = Textures.emplace_back();
-						aiTexture* Texture = Scene->mTextures[i];
-
-						CurrentTex.Name = Texture->mFilename.C_Str();
-					}
-				});
-			}
-
 			TaskGroup.run([&]() {
 				for (UINT i = 0; i < Scene->mNumMaterials; ++i)
 				{
@@ -246,6 +233,10 @@ int main(void)
 							uint32_t Index = atoi(TexPath.C_Str() + 1);
 							Tmp.DiffuseTextures.push_back(Index);
 						}
+						else
+						{
+							DEBUG_BREAK();
+						}
 					}
 				}
 			});
@@ -256,8 +247,11 @@ int main(void)
 					{
 						aiTexture* Texture = Scene->mTextures[i];
 						Render::TextureData TexData = ParseTexture(Texture);
+						RenderContext.CreateTexture(TexData);
+						RenderContext.CreateSRV(TexData);
 						Textures.push_back(TexData);
 					}
+					TexturesLoaded = true;
 				});
 			}
 		}
@@ -615,9 +609,8 @@ int main(void)
 				CommandList->SetGraphicsRoot32BitConstants(1, 16, &Combined, 0);
 				for (UINT ID : Mesh.MeshIDs)
 				{
-					auto& MeshData = MeshDatas[ID];
+					MeshData& MeshData = MeshDatas[ID];
 
-					auto Desc = MeshData.VertexBuffer->GetDesc();
 					CommandList->IASetVertexBuffers(0, 1, &MeshData.VertexBufferView);
 					CommandList->IASetIndexBuffer(&MeshData.IndexBufferView);
 
@@ -677,6 +670,11 @@ int main(void)
 	Importer.SetProgressHandler(nullptr);
 	Helper.ShouldProceed = false;
 	TaskGroup.wait();
+	// hack, don't care
+	if (RenderContext.mCurrentBackBufferIndex == 0)
+	{
+		RenderContext.mCurrentBackBufferIndex = Render::Context::BUFFER_COUNT;
+	}
 	Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex - 1], CurrentFenceValue, WaitEvent);
 	CloseHandle(WaitEvent);
 }
