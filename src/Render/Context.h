@@ -776,7 +776,7 @@ public:
 		PSODesc.PS.pShaderBytecode = PixelShader->GetBufferPointer();
 		PSODesc.pRootSignature = mRootSignature.Get();
 		PSODesc.NumRenderTargets = 1;
-		PSODesc.RTVFormats[0] = BACK_BUFFER_FORMAT;
+		PSODesc.RTVFormats[0] = SCENE_COLOR_FORMAT;
 		PSODesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 		PSODesc.InputLayout.NumElements = ArraySize(PSOLayout);
 		PSODesc.InputLayout.pInputElementDescs = PSOLayout;
@@ -887,7 +887,7 @@ public:
 			);
 		}
 
-		D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetRTVHandleForBackBuffer();
+		D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetRTVHandle(mSceneColor.RTVIndex);
 		CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
 		CommandList->SetPipelineState(GuiPSO.Get());
 		CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -932,6 +932,7 @@ public:
 
 	D3D12_GPU_DESCRIPTOR_HANDLE GetGeneralHandleGPU(UINT Index)
 	{
+		CHECK(Index != UINT_MAX, "Uninitialized index");
 		CD3DX12_GPU_DESCRIPTOR_HANDLE rtv(mGeneralDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
 			Index, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV]);
 
@@ -940,6 +941,7 @@ public:
 
 	D3D12_CPU_DESCRIPTOR_HANDLE GetGeneralHandle(UINT Index)
 	{
+		CHECK(Index != UINT_MAX, "Uninitialized index");
 		CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(mGeneralDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
 			Index, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV]);
 
@@ -949,6 +951,7 @@ public:
 
 	D3D12_CPU_DESCRIPTOR_HANDLE GetRTVHandle(UINT Index)
 	{
+		CHECK(Index != UINT_MAX, "Uninitialized index");
 		CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(mRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
 			Index, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
 

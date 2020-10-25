@@ -31,6 +31,33 @@ struct MeshData
 	D3D12_INDEX_BUFFER_VIEW		IndexBufferView;
 };
 
+struct Material
+{
+	String Name;
+	TArray<uint32_t> DiffuseTextures;
+};
+
+Render::TextureData ParseTexture(aiTexture* Texture)
+{
+	Render::TextureData Result;
+
+	if (Texture->mHeight == 0)
+	{
+		int Channels = 0;
+		stbi_uc* Data = stbi_load_from_memory(
+			(stbi_uc*)Texture->pcData,
+			Texture->mWidth,
+			&Result.Size.x, &Result.Size.y,
+			&Channels, 0);
+
+		Result.Data = StringView((char *)Data, Result.Size.x * Result.Size.y * Channels);
+		Result.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+		return Result;
+	}
+
+	return Result;
+}
+
 void AllocateMeshData(aiMesh* Mesh, Render::Context& RenderContext, MeshData& Result)
 {
 	CHECK(Mesh->HasFaces(), "Mesh without faces?");
@@ -162,11 +189,13 @@ int main(void)
 		TArray<UINT> MeshIDs;
 	};
 
+	TArray<Material> Materials;
 	TArray<MeshData> MeshDatas;
 	TArray<Mesh> Meshes;
 	TArray<Render::TextureData> Textures;
 
 	std::atomic<UINT> Counter(0);
+	std::atomic<bool> TexturesLoaded;
 
 	using namespace tbb;
 	task_group TaskGroup;
@@ -205,16 +234,32 @@ int main(void)
 			TaskGroup.run([&]() {
 				for (UINT i = 0; i < Scene->mNumMaterials; ++i)
 				{
-					aiMaterial* Material = Scene->mMaterials[i];
-					for (UINT j = 0; j < Material->GetTextureCount(aiTextureType_DIFFUSE); ++j)
+					aiMaterial* MaterialPtr = Scene->mMaterials[i];
+					Material Tmp;
+					Tmp.Name = String(MaterialPtr->GetName().C_Str());
+					for (UINT j = 0; j < MaterialPtr->GetTextureCount(aiTextureType_DIFFUSE); ++j)
 					{
 						aiString TexPath;
-						Material->GetTexture(aiTextureType_DIFFUSE, j, &TexPath);
-						aiString MatName = Material->GetName();
-						continue;
+						MaterialPtr->GetTexture(aiTextureType_DIFFUSE, j, &TexPath);
+						if (TexPath.C_Str()[0] == '*')
+						{
+							uint32_t Index = atoi(TexPath.C_Str() + 1);
+							Tmp.DiffuseTextures.push_back(Index);
+						}
 					}
 				}
 			});
+			if (Scene->HasTextures())
+			{
+				TaskGroup.run([&]() {
+					for (UINT i = 0; i < Scene->mNumTextures; ++i)
+					{
+						aiTexture* Texture = Scene->mTextures[i];
+						Render::TextureData TexData = ParseTexture(Texture);
+						Textures.push_back(TexData);
+					}
+				});
+			}
 		}
 
 		{
@@ -233,7 +278,6 @@ int main(void)
 
 					UploadOffsets[i] = UploadBufferSize;
 					UploadBufferSize += Tmp.IndexBufferView.SizeInBytes + Tmp.VertexBufferView.SizeInBytes;
-					MeshDatas[i] = Tmp;
 				}
 
 				UploadBuffer = RenderContext.CreateBuffer(UploadBufferSize, true);
@@ -335,7 +379,6 @@ int main(void)
 
 	ComPtr<ID3D12PipelineState> MeshDrawPSO;
 	ComPtr<ID3D12PipelineState> DownsampleComputePSO;
-	Render::TextureData Lena;
 
 	TaskGroup.run([&]()
 	{
@@ -393,18 +436,21 @@ int main(void)
 			MeshDrawPSO = RenderContext.CreatePSO(&PSODesc);
 		}
 
-		{
-			unsigned char *Data = stbi_load("lena_std.tga", &Lena.Size.x, &Lena.Size.y, nullptr, 4);
-			Lena.Data = StringView((char *)Data, Lena.Size.x * Lena.Size.y * 4);
-			Lena.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
-
-			RenderContext.CreateSRV(Lena);
-			stbi_image_free((stbi_uc*)Lena.Data.data());
-		}
 		RenderContext.FlushUpload();
 		Counter.fetch_add(1);
 		return 0;
 	});
+
+	Render::TextureData DefaultTexture;
+	{
+		unsigned char *Data = stbi_load("content/uvcheck.jpg", &DefaultTexture.Size.x, &DefaultTexture.Size.y, nullptr, 4);
+		DefaultTexture.Data = StringView((char *)Data, DefaultTexture.Size.x * DefaultTexture.Size.y * 4);
+		DefaultTexture.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+
+		RenderContext.CreateTexture(DefaultTexture);
+		RenderContext.CreateSRV(DefaultTexture);
+		stbi_image_free(Data);
+	}
 
 	RenderContext.InitGUIResources();
 	RenderContext.FlushUpload();
@@ -554,7 +600,7 @@ int main(void)
 
 			ZoneScopedN("Drawing meshes");
 
-			RenderContext.BindDescriptors(CommandList, Lena);
+			RenderContext.BindDescriptors(CommandList, DefaultTexture);
 
 			CommandList->SetPipelineState(MeshDrawPSO.Get());
 			CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
