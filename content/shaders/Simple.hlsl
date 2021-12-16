@@ -23,12 +23,12 @@ VertexShaderOutput MainVS(
 	return output;
 }
 
-Texture2D<float4>    LenaStd : register(t0);
+Texture2D<float4>    Diffuse : register(t0);
 SamplerState	PointSampler : register(s0);
 SamplerState BilinearSampler : register(s1);
 
 float4 MainPS(VertexShaderOutput In) : SV_TARGET
 {
-	return LenaStd.Sample(BilinearSampler, In.UV);
+	return Diffuse.Sample(BilinearSampler, In.UV);
 }
 

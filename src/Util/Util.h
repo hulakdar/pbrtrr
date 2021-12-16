@@ -15,7 +15,7 @@ int ArraySize(T (&)[count]) { return count; }
 
 StringView LoadWholeFile(const char* Path);
 
-static wchar_t g_ScratchNameBuffer[256];
+static wchar_t g_ScratchNameBuffer[1024];
 
 template<typename T, typename... TArgs>
 void SetD3DName(ComPtr<T>& Ptr, TArgs ...Args)

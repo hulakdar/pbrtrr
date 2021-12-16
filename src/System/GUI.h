@@ -23,11 +23,11 @@ public:
 		io.DisplaySize = ImVec2(WindowHandle.mSize.x, WindowHandle.mSize.y);
 
 		io.Fonts->AddFontFromFileTTF("content/fonts/Roboto.ttf", 20);
-		unsigned char *Data = nullptr;
+		uint8_t *Data = nullptr;
 		io.Fonts->GetTexDataAsAlpha8(&Data, &FontTexData.Size.x, &FontTexData.Size.y);
-		FontTexData.Data = StringView((char *)Data, FontTexData.Size.x * FontTexData.Size.y);
 		FontTexData.Format = DXGI_FORMAT_R8_UNORM;
 		RenderContext.CreateTexture(FontTexData);
+		RenderContext.UploadTextureData(FontTexData, Data);
 		RenderContext.CreateSRV(FontTexData);
 
 		io.IniFilename = NULL;
@@ -51,7 +51,7 @@ public:
 		io.MouseWheelH = WindowHandle.mScrollOffset.x;
 	}
 
-	Render::TextureData FontTexData;
+	TextureData FontTexData;
 };
 
 }

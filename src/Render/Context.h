@@ -12,8 +12,21 @@
 #include <d3dcompiler.h>
 #include <Tracy.hpp>
 #include <TracyD3D12.hpp>
+#include <Containers/UniquePtr.h>
 
 //#define TEST_WARP
+
+struct TextureData
+{
+	ComPtr<ID3D12Resource>	Resource;
+
+	String		Name = {};
+	IVector2	Size = {};
+	DXGI_FORMAT	Format = DXGI_FORMAT_UNKNOWN;
+	UINT		SRVIndex = UINT_MAX;
+	UINT		UAVIndex = UINT_MAX;
+	UINT		RTVIndex = UINT_MAX;
+};
 
 namespace Render {
 
@@ -24,26 +37,29 @@ inline void PrintBlob(ID3DBlob* ErrorBlob)
 	DEBUG_BREAK();
 }
 
-#define VALIDATE_D3D_WITH_BLOB(x, blob) if (!SUCCEEDED(x)) {Render::PrintBlob(blob.Get());}
-
 inline ComPtr<ID3DBlob> CompileShader(const char *FileName, const char *EntryPoint, const char *TargetVersion)
 {
-	StringView Shader = LoadWholeFile(FileName);
 
 	ComPtr<ID3DBlob> Result;
 
-	ComPtr<ID3DBlob> ErrorBlob;
-	VALIDATE_D3D_WITH_BLOB(
-		D3DCompile(
+	{
+		StringView Shader = LoadWholeFile(FileName);
+
+		ComPtr<ID3DBlob> ErrorBlob;
+		HRESULT HR = D3DCompile(
 			Shader.data(), Shader.size(),
 			FileName,
 			nullptr, nullptr,
 			EntryPoint, TargetVersion,
 			0, 0,
 			&Result,
-			&ErrorBlob),
-		ErrorBlob
-	);
+			&ErrorBlob);
+		if (!SUCCEEDED(HR))
+		{
+			PrintBlob(ErrorBlob.Get());
+		}
+	}
+
 	return Result;
 }
 
@@ -127,30 +143,19 @@ inline UINT ComponentCountFromFormat(DXGI_FORMAT Format)
 	return 0;
 }
 
-struct TextureData
-{
-	ComPtr<ID3D12Resource>	Resource;
-
-	StringView	Data = {};
-	String		Name = {};
-	IVector2	Size = {};
-	DXGI_FORMAT	Format = DXGI_FORMAT_UNKNOWN;
-	UINT		SRVIndex = UINT_MAX;
-	UINT		UAVIndex = UINT_MAX;
-	UINT		RTVIndex = UINT_MAX;
-};
-
 class Context
 {
 public:
 	inline static D3D12_HEAP_PROPERTIES DefaultHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 	inline static D3D12_HEAP_PROPERTIES UploadHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+	inline static D3D12_HEAP_PROPERTIES ReadbackHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
 
 	inline static const UINT BUFFER_COUNT = 3;
 	inline static const UINT GENERAL_HEAP_SIZE = 4096;
 	inline static const UINT RTV_HEAP_SIZE = 32;
 	inline static const DXGI_FORMAT BACK_BUFFER_FORMAT = DXGI_FORMAT_R10G10B10A2_UNORM;
 	inline static const DXGI_FORMAT SCENE_COLOR_FORMAT = DXGI_FORMAT_R11G11B10_FLOAT;
+	inline static const DXGI_FORMAT READBACK_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
 
 	ComPtr<ID3D12Device>		mDevice;
 	ComPtr<ID3D12CommandQueue>	mGraphicsQueue;
@@ -159,9 +164,11 @@ public:
 	ComPtr<ID3D12RootSignature> mRootSignature;
 	ComPtr<ID3D12RootSignature> mComputeRootSignature;
 	TextureData		mSceneColor = {};
-	TextureData		mSceneColorReadback = {};
+	TextureData		mSceneColorSmall = {};
+	TextureData		mScreenshotStaging = {};
 
-	ComPtr<ID3D12Resource>		mBackBuffers[BUFFER_COUNT] = {};
+	ComPtr<ID3D12Resource>	mBackBuffers[BUFFER_COUNT] = {};
+	ComPtr<ID3D12Resource>	mSceneColorStagingBuffers[BUFFER_COUNT] = {};
 
 	TracyD3D12Ctx	mGraphicsProfilingCtx;
 	TracyD3D12Ctx	mComputeProfilingCtx;
@@ -219,24 +226,39 @@ public:
 		}
 
 		{
-			mSceneColor.Format = DXGI_FORMAT_R11G11B10_FLOAT;
+			mSceneColor.Format = SCENE_COLOR_FORMAT;
 			mSceneColor.Size = IVector2(Window.mSize.x, Window.mSize.y);
+
+			D3D12_CLEAR_VALUE ClearValue = {};
+			FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
+			memcpy(ClearValue.Color, clearColor, sizeof(clearColor));
+			ClearValue.Format = SCENE_COLOR_FORMAT;
+
 			CreateTexture(mSceneColor,
 				D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-				D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+				D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+				&ClearValue
 			);
 			CreateSRV(mSceneColor);
 			CreateRTV(mSceneColor);
 		}
 
 		{
-			mSceneColorReadback.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-			mSceneColorReadback.Size = IVector2(960, 540);
-			CreateTexture(mSceneColorReadback,
+			mSceneColorSmall.Format = READBACK_FORMAT;
+			mSceneColorSmall.Size = IVector2(960, 540);
+			CreateTexture(mSceneColorSmall,
 				D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-				D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+				D3D12_RESOURCE_STATE_COPY_SOURCE,
+				nullptr
 			);
-			CreateUAV(mSceneColorReadback);
+			{
+				CreateRTV(mSceneColorSmall);
+			}
+		}
+
+		for (int i = 0; i < BUFFER_COUNT; i++)
+		{
+			mSceneColorStagingBuffers[i] = CreateBuffer(mSceneColorSmall.Size.x * mSceneColorSmall.Size.y * 4, false, true);
 		}
 
 		mDSVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
@@ -269,7 +291,7 @@ public:
 		if (mTearingSupported)
 		{
 			mPresentFlags |= DXGI_PRESENT_ALLOW_TEARING;
-			mSyncInterval = !mTearingSupported;
+			mSyncInterval = 0;
 		}
 
 		InitUploadResources();
@@ -295,15 +317,18 @@ public:
 			);
 
 			ComPtr<ID3DBlob> RootBlob;
-			ComPtr<ID3DBlob> ErrorBlob;
-			VALIDATE_D3D_WITH_BLOB(
-				D3D12SerializeRootSignature(
+			{
+				ComPtr<ID3DBlob> ErrorBlob;
+				HRESULT HR = D3D12SerializeRootSignature(
 					&DescRootSignature,
 					D3D_ROOT_SIGNATURE_VERSION_1,
 					&RootBlob,
-					&ErrorBlob),
-				ErrorBlob
-			);
+					&ErrorBlob);
+				if (!SUCCEEDED(HR))
+				{
+					PrintBlob(ErrorBlob.Get());
+				}
+			}
 
 			mRootSignature = CreateRootSignature(RootBlob);
 		}
@@ -315,16 +340,21 @@ public:
 			{
 				CD3DX12_DESCRIPTOR_RANGE Range(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
 				Params[0].InitAsDescriptorTable(1, &Range);
+				Params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 			}
 			{
 				CD3DX12_DESCRIPTOR_RANGE Range(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
 				Params[1].InitAsDescriptorTable(1, &Range);
+				Params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 			}
 			Params[2].InitAsConstants(16, 0);
+			Params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
 			CD3DX12_STATIC_SAMPLER_DESC Samplers[2] = {};
 			Samplers[0].Init(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
 			Samplers[1].Init(1, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
+			Samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+			Samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
 			CD3DX12_ROOT_SIGNATURE_DESC DescRootSignature;
 
@@ -335,15 +365,18 @@ public:
 			);
 
 			ComPtr<ID3DBlob> RootBlob;
-			ComPtr<ID3DBlob> ErrorBlob;
-			VALIDATE_D3D_WITH_BLOB(
-				D3D12SerializeRootSignature(
+			{
+				ComPtr<ID3DBlob> ErrorBlob;
+				HRESULT HR = D3D12SerializeRootSignature(
 					&DescRootSignature,
 					D3D_ROOT_SIGNATURE_VERSION_1,
 					&RootBlob,
-					&ErrorBlob),
-				ErrorBlob
-			);
+					&ErrorBlob);
+				if (!SUCCEEDED(HR))
+				{
+					PrintBlob(ErrorBlob.Get());
+				}
+			}
 
 			mComputeRootSignature = CreateRootSignature(RootBlob);
 		}
@@ -422,7 +455,7 @@ public:
 	inline static const UINT	UPLOAD_BUFFERS = 3;
 
 	ComPtr<ID3D12CommandAllocator>	mUploadCommandAllocators[UPLOAD_BUFFERS];
-	UINT64							mUploadFenceValues[UPLOAD_BUFFERS];
+	UINT64							mUploadFenceValues[UPLOAD_BUFFERS] = {};
 	TArray<ComPtr<ID3D12Resource>>	mUploadBuffers[UPLOAD_BUFFERS];
 	ComPtr<ID3D12Fence>				mUploadFences[UPLOAD_BUFFERS];
 
@@ -456,6 +489,22 @@ public:
 		mUploadBufferOffset = 0;
 	}
 
+	void WaitForUploadFinish()
+	{
+		if (mCurrentUploadBufferIndex == 0)
+		{
+			mCurrentUploadBufferIndex  = UPLOAD_BUFFERS;
+		}
+		UINT PreviousUploadBufferIndex = mCurrentUploadBufferIndex - 1;
+
+		// wait if needed
+		WaitForFenceValue(
+			mUploadFences[PreviousUploadBufferIndex ],
+			mUploadFenceValues[PreviousUploadBufferIndex],
+			mUploadWaitEvent
+		);
+	}
+
 	void FlushUpload()
 	{
 		ZoneScoped;
@@ -478,7 +527,7 @@ public:
 		);
 
 		// go to next buffers
-		mCurrentUploadFenceValue++;
+		//mCurrentUploadBufferIndex = (mCurrentUploadBufferIndex + 1) % UPLOAD_BUFFERS;
 
 		// wait if needed
 		WaitForFenceValue(
@@ -489,7 +538,7 @@ public:
 
 		mUploadTransitions.clear();
 		mUploadBuffers[mCurrentUploadBufferIndex].resize(1); // always leave the first upload buffer
-		mUploadBufferAddress = NULL;
+		//mUploadBufferAddress = NULL;
 		mUploadBufferOffset = 0;
 
 		VALIDATE(mUploadCommandAllocators[mCurrentUploadBufferIndex]->Reset());
@@ -653,7 +702,9 @@ public:
 	void CreateTexture(
 		TextureData& TexData,
 		D3D12_RESOURCE_FLAGS Flags = D3D12_RESOURCE_FLAG_NONE,
-		D3D12_RESOURCE_STATES InitialState = D3D12_RESOURCE_STATE_COPY_DEST)
+		D3D12_RESOURCE_STATES InitialState = D3D12_RESOURCE_STATE_COPY_DEST,
+		D3D12_CLEAR_VALUE *ClearValue = nullptr
+	)
 	{
 		ZoneScoped;
 		IVector2 Size = TexData.Size;
@@ -665,30 +716,33 @@ public:
 			Flags
 		);
 
-		TexData.Resource = CreateResource(&TextureDesc, &Render::Context::DefaultHeapProps, InitialState);
+		TexData.Resource = CreateResource(&TextureDesc, &DefaultHeapProps, InitialState, ClearValue);
+	}
 
-		if (TexData.Data.data())
-		{
-			UINT64 UploadBufferSize = GetRequiredIntermediateSize(TexData.Resource.Get(), 0, 1);
-			ComPtr<ID3D12Resource> TextureUploadBuffer = CreateBuffer(UploadBufferSize, true);
-			UINT Components = ComponentCountFromFormat(TexData.Format);
+	void UploadTextureData(TextureData& TexData, uint8_t *RawData)
+	{
+		ZoneScoped;
 
-			D3D12_SUBRESOURCE_DATA SrcData = {};
-			SrcData.pData = TexData.Data.data();
-			SrcData.RowPitch = Size.x * Components;
-			SrcData.SlicePitch = Size.x * Size.y * Components;
+		UINT64 UploadBufferSize = GetRequiredIntermediateSize(TexData.Resource.Get(), 0, 1);
+		ComPtr<ID3D12Resource> TextureUploadBuffer = CreateBuffer(UploadBufferSize, true);
+		UINT Components = ComponentCountFromFormat(TexData.Format);
 
-			D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-				TexData.Resource.Get(),
-				InitialState,
-				D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
-			);
+		IVector2 Size = TexData.Size;
+		D3D12_SUBRESOURCE_DATA SrcData = {};
+		SrcData.pData = RawData;
+		SrcData.RowPitch = Size.x * Components;
+		SrcData.SlicePitch = Size.x * Size.y * Components;
 
-			ScopedLock Lock(mUploadMutex);
-			mUploadBuffers[mCurrentUploadBufferIndex].push_back(TextureUploadBuffer);
-			UpdateSubresources<1>(mUploadCommandList.Get(), TexData.Resource.Get(), TextureUploadBuffer.Get(), 0, 0, 1, &SrcData);
-			mUploadTransitions.push_back(Barrier);
-		}
+		D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+			TexData.Resource.Get(),
+			D3D12_RESOURCE_STATE_COPY_DEST,
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+		);
+
+		ScopedLock Lock(mUploadMutex);
+		mUploadBuffers[mCurrentUploadBufferIndex].push_back(TextureUploadBuffer);
+		UpdateSubresources<1>(mUploadCommandList.Get(), TexData.Resource.Get(), TextureUploadBuffer.Get(), 0, 0, 1, &SrcData);
+		mUploadTransitions.push_back(Barrier);
 	}
 
 	ComPtr<ID3D12Fence> CreateFence(UINT64 InitialValue = 0, D3D12_FENCE_FLAGS Flags = D3D12_FENCE_FLAG_NONE)
@@ -703,7 +757,7 @@ public:
 		return Result;
 	}
 
-	ComPtr<ID3D12Resource> CreateBuffer(UINT64 Size, bool bUploadBuffer = false)
+	ComPtr<ID3D12Resource> CreateBuffer(UINT64 Size, bool bUploadBuffer = false, bool bStagingBuffer = false)
 	{
 		D3D12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(Size);
 
@@ -717,13 +771,18 @@ public:
 			InitialState = D3D12_RESOURCE_STATE_GENERIC_READ;
 		}
 
+		if (bStagingBuffer)
+		{
+			HeapProps = &ReadbackHeapProperties;
+			InitialState = D3D12_RESOURCE_STATE_COPY_DEST;
+		}
+
 		return CreateResource(&BufferDesc, HeapProps, InitialState);
 	}
 
-	D3D12_VERTEX_BUFFER_VIEW	CreateVertexBuffer(const void *Data, UINT64 Size, UINT64 Stride)
+	D3D12_VERTEX_BUFFER_VIEW	CreateVertexBufferView(ComPtr<ID3D12Resource>& Buffer,const void *Data, UINT64 Size, UINT64 Stride)
 	{
 		ZoneScoped;
-		ComPtr<ID3D12Resource> Buffer = CreateBuffer(Size);
 
 		D3D12_VERTEX_BUFFER_VIEW Result;
 		Result.BufferLocation = Buffer->GetGPUVirtualAddress();
@@ -734,10 +793,9 @@ public:
 		return Result;
 	}
 
-	D3D12_INDEX_BUFFER_VIEW		CreateIndexBuffer(const void *Data, UINT64 Size, DXGI_FORMAT Format)
+	D3D12_INDEX_BUFFER_VIEW		CreateIndexBufferView(ComPtr<ID3D12Resource>& Buffer,const void *Data, UINT64 Size, DXGI_FORMAT Format)
 	{
 		ZoneScoped;
-		ComPtr<ID3D12Resource> Buffer = CreateBuffer(Size);
 
 		D3D12_INDEX_BUFFER_VIEW Result;
 		Result.BufferLocation = Buffer->GetGPUVirtualAddress();
@@ -892,8 +950,8 @@ public:
 		CommandList->SetPipelineState(GuiPSO.Get());
 		CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-		// WindowSize
-		CommandList->SetGraphicsRoot32BitConstants(1, 2, &Window.mSize, 0);
+		Math::Vector2 RenderTargetSize(mSceneColor.Size.x, mSceneColor.Size.y);
+		CommandList->SetGraphicsRoot32BitConstants(1, 2, &RenderTargetSize, 0);
 
 		D3D12_INDEX_BUFFER_VIEW ImGuiIndexBufferView;
 		ImGuiIndexBufferView.BufferLocation = ImGuiIndexBuffer->GetGPUVirtualAddress();
@@ -947,7 +1005,6 @@ public:
 
 		return rtv;
 	}
-
 
 	D3D12_CPU_DESCRIPTOR_HANDLE GetRTVHandle(UINT Index)
 	{
@@ -1115,7 +1172,7 @@ private:
 
 		SIZE_T MaxSize = 0;
 		ComPtr<IDXGIAdapter1> Adapter;
-	#ifndef TEST_WARP
+#ifndef TEST_WARP
 		for (uint32_t Idx = 0; DXGI_ERROR_NOT_FOUND != mDXGIFactory->EnumAdapters1(Idx, &Adapter); ++Idx)
 		{
 			DXGI_ADAPTER_DESC1 desc;
@@ -1130,7 +1187,7 @@ private:
 				MaxSize = desc.DedicatedVideoMemory;
 			}
 		}
-	#endif
+#endif
 
 		if (Result.Get() == nullptr)
 		{
@@ -1139,7 +1196,7 @@ private:
 			VALIDATE(D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&Result)));
 		}
 
-		#ifdef _DEBUG
+//#ifdef _DEBUG
 		ComPtr<ID3D12InfoQueue> pInfoQueue;
 		if (SUCCEEDED(Result.As(&pInfoQueue)))
 		{
@@ -1173,7 +1230,7 @@ private:
 	 
 			VALIDATE(pInfoQueue->PushStorageFilter(&NewFilter));
 		}
-		#endif
+//#endif
 
 		return Result;
 	}
@@ -1182,9 +1239,9 @@ private:
 	{
 		ComPtr<IDXGIFactory4> dxgiFactory;
 		UINT FactoryFlags = 0;
-	#ifdef DEBUG
+#ifdef DEBUG
 		FactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-	#endif
+#endif
 		VALIDATE(CreateDXGIFactory2(FactoryFlags, IID_PPV_ARGS(&dxgiFactory)));
 
 		return dxgiFactory;

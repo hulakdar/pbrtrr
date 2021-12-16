@@ -53,6 +53,7 @@ end
 if _ACTION == "vs2017" then
     libdirs {"./thirdparty/glfw/lib-vc2017"}
 else
+
     libdirs {"./thirdparty/glfw/lib-vc2019"}
 end
 
@@ -61,7 +62,6 @@ end
         "./thirdparty/EASTL",
         "./thirdparty/assimp",
         "./thirdparty/irrXML",
-        "./thirdparty/tbb",
         "./thirdparty/zlib",
         "./thirdparty/DirectXTK12"
     }
@@ -91,7 +91,6 @@ end
         "./thirdparty/imgui",
         "./thirdparty/tracy",
         "./thirdparty/assimp/include",
-        "./thirdparty/tbb/include",
         "./thirdparty/irrXML/include",
         "./thirdparty/DirectXTK12/include",
         "./thirdparty/EASTL/include"
@@ -108,14 +107,10 @@ end
         staticruntime "Off"
         defines {
             "GLFW_INCLUDE_NONE",
-            "TBB_USE_DEBUG",
             "EA_DEBUG",
             "BUILD_DEBUG"
         }
         links {
-            "tbb_debug",
-            "tbbmalloc_debug",
-            "tbbproxy_debug",
             "EASTLd",
             "assimp-vc142-mtd",
             "libz-staticmtd"
@@ -127,9 +122,6 @@ end
             "BUILD_DEVELOPMENT"
         }
         links {
-            "tbb",
-            "tbbmalloc",
-            "tbbproxy",
             "EASTL",
             "assimp-vc142-mt",
             "libz-staticmt"
@@ -138,9 +130,6 @@ end
     filter "Development"
         defines { "BUILD_DEVELOPMENT" }
         links {
-            "tbb",
-            "tbbmalloc",
-            "tbbproxy",
             "EASTL",
             "assimp-vc142-mt",
             "libz-staticmt"
@@ -150,9 +139,6 @@ end
     filter "Release"
         defines { "BUILD_RELEASE" }
         links {
-            "tbb",
-            "tbbmalloc",
-            "tbbproxy",
             "EASTL",
             "assimp-vc142-mt",
             "libz-staticmt"

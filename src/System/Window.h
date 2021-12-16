@@ -76,7 +76,7 @@ public:
 		UpdateInput();
 	}
 
-	Vector2				mSize { 1600, 800 };
+	Vector2				mSize { 1280, 720 };
 	Vector2				mMousePosition { 0, 0 };
 	Vector2				mScrollOffset { 0, 0 };
 

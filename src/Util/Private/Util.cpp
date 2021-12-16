@@ -58,27 +58,32 @@ StringView LoadWholeFile(const char *Path)
 void* operator new[](size_t size, const char*, int, unsigned, const char*, int)
 {
 	uint8_t *ptr = new uint8_t[size];
-	TracyAlloc (ptr , size);
 	return ptr;
 }
 
 void* operator new[](size_t size, size_t, size_t, const char*, int, unsigned, const char*, int) 
 {
 	uint8_t *ptr = new uint8_t[size];
-	TracyAlloc (ptr , size);
+	TracyAlloc(ptr, size);
 	return ptr;
 }  
 
 
-void* operator new(std :: size_t count)
+void* operator new(size_t count)
 {
 	auto ptr = malloc(count);
-	TracyAlloc (ptr , count);
+	TracyAlloc(ptr, count);
 	return ptr;
 }
 void operator delete(void* ptr) noexcept
 {
-	TracyFree (ptr);
+	TracyFree(ptr);
+	free(ptr);
+}
+
+void operator delete[](void* ptr, size_t count) noexcept
+{
+	TracyFree(ptr);
 	free(ptr);
 }
 
