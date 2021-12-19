@@ -64,10 +64,8 @@ void* operator new[](size_t size, const char*, int, unsigned, const char*, int)
 void* operator new[](size_t size, size_t, size_t, const char*, int, unsigned, const char*, int) 
 {
 	uint8_t *ptr = new uint8_t[size];
-	TracyAlloc(ptr, size);
 	return ptr;
 }  
-
 
 void* operator new(size_t count)
 {

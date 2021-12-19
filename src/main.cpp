@@ -179,48 +179,44 @@ public:
 
 std::thread		Workers[4];
 
+bool WorkersShouldStop = false;
+
 TracyLockable(Mutex, WorkerLock);
 std::condition_variable_any WakeUpWorker;
 std::queue<eastl::function<void(void)>> WorkQueue;
 
-size_t EnqueueWork(eastl::function<void(void)> Work)
+void EnqueueWork(eastl::function<void(void)> Work)
 {
-	//unsigned long index;
-	//size_t bits;
-	//do
-	//{
-		//bits = WorkerStatusBitfield;
-		//index = _tzcnt_u64(bits);
-	//} while (!WorkerStatusBitfield.compare_exchange_strong(bits, bits & ~(1ULL << index)));
+	std::lock_guard Lock(WorkerLock);
+	WorkQueue.push(Work);
+	WakeUpWorker.notify_one();
+}
 
-	//if (index == 64)
-	//{
-		//Work();
-		return -1;
-	//}
+void WorkerProc()
+{
+	while (true)
+	{
+		std::unique_lock<LockableBase(Mutex)> Lock(WorkerLock);
+		WakeUpWorker.wait(Lock, []() { return WorkersShouldStop || !WorkQueue.empty(); });
+		if (WorkersShouldStop)
+		{
+			return;
+		}
 
-	//if (Workers[index].joinable())
-	//{
-		//Workers[index].join();
-	//}
-
-	//Workers[index] = std::thread(
-		//[Work, index]() {
-			//Work();
-//
-			//Sleep(100);
-			//size_t bits;
-			//do
-			//{
-				//bits = WorkerStatusBitfield;
-			//} while (!WorkerStatusBitfield.compare_exchange_strong(bits, bits | (1ULL << index)));
-		//}
-	//);
-	//return index;
+		std::function<void(void)> CurrentWorkItem = std::move(WorkQueue.front());
+		WorkQueue.pop();
+		Lock.unlock();
+		CurrentWorkItem();
+	}
 }
 
 int main(void)
 {
+	for (int i = 0; i < ArraySize(Workers); ++i)
+	{
+		Workers[i] = std::thread(&WorkerProc);
+	}
+
 	Debug::Scope DebugScopeObject;
 
 	for (int i = 0; i < ArraySize(Workers); ++i)
@@ -634,6 +630,7 @@ int main(void)
 
 	UINT64 WindowStateDirtyFlushes = 0;
 	std::atomic<bool> ReadbackInflight;
+	std::atomic<bool> WorkerInProgress;
 	UINT64  ReadBackReadyFence = 0;
 
 	while (!glfwWindowShouldClose(Window.mHandle))
@@ -687,7 +684,7 @@ int main(void)
 		ComPtr<ID3D12CommandAllocator>& CommandAllocator = CommandAllocators[RenderContext.mCurrentBackBufferIndex];
 		ComPtr<ID3D12Fence>& Fence = FrameFences[RenderContext.mCurrentBackBufferIndex];
 
-		if (ReadbackInflight && ReadBackReadyFence < FrameFenceValues[RenderContext.mCurrentBackBufferIndex])
+		if (!WorkerInProgress && ReadbackInflight && ReadBackReadyFence < FrameFenceValues[RenderContext.mCurrentBackBufferIndex])
 		{
 			ZoneScopedN("Readback screen capture");
 
@@ -702,15 +699,14 @@ int main(void)
 			D3D12_RESOURCE_DESC Desc = Resource->GetDesc();
 			RenderContext.mDevice->GetCopyableFootprints(&Desc, 0, 1, 0, NULL, &RowCount, &RowPitch, &ResourceSize);
 
+			WorkerInProgress = true;
 			EnqueueWork(
 				[
-					WhenFunctionCalled = CurrentFenceValue,
 					&ReadbackInflight,
-					&CurrentFenceValue,
+					&WorkerInProgress,
 					x, y,
 					ResourcePtr = Resource.Get(),
-					ResourceSize = RowCount * RowPitch,
-					FrameLagValue = ReadBackReadyFence + WindowStateDirtyFlushes
+					ResourceSize = RowCount * RowPitch
 				]
 				() {
 					ZoneScopedN("Uploading screenshot to Tracy");
@@ -719,11 +715,10 @@ int main(void)
 					Range.End = (UINT64)ResourceSize;
 					void* Data;
 					ResourcePtr->Map(0, &Range, &Data);
-					Debug::Print("Current fence value: ", CurrentFenceValue, "FrameLag: ", FrameLagValue, "WhenFunctionCalled", WhenFunctionCalled);
-
 					FrameImage(Data, x, y, 3, false);
 					ResourcePtr->Unmap(0, NULL);
 
+					WorkerInProgress = false;
 					ReadbackInflight = false;
 				}
 			);
@@ -863,7 +858,7 @@ int main(void)
 		}
 
 #if TRACY_ENABLE || CAPTURE_SCREEN // Send screenshot to Tracy
-		if (TracyIsConnected && !ReadbackInflight)
+		if (TracyIsConnected && !ReadbackInflight && !WorkerInProgress)
 		{
 			TracyD3D12Zone(RenderContext.mGraphicsProfilingCtx, CommandList.Get(), "Downsample scenecolor to readback");
 
@@ -936,7 +931,7 @@ int main(void)
 		}
 
 #if TRACY_ENABLE || CAPTURE_SCREEN
-		if (TracyIsConnected && !ReadbackInflight)
+		if (TracyIsConnected && !ReadbackInflight && !WorkerInProgress)
 		{
 			ReadBackReadyFence = FrameFenceValues[RenderContext.mCurrentBackBufferIndex];
 			ReadbackInflight = true;
@@ -961,6 +956,9 @@ int main(void)
 	Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex - 1], CurrentFenceValue, WaitEvent);
 	RenderContext.WaitForUploadFinish();
 	CloseHandle(WaitEvent);
+
+	WorkersShouldStop = true;
+	WakeUpWorker.notify_all();
 
 	for (auto& Worker : Workers)
 		if (Worker.joinable())
