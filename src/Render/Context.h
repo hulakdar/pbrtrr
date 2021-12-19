@@ -168,7 +168,7 @@ public:
 	TextureData		mScreenshotStaging = {};
 
 	ComPtr<ID3D12Resource>	mBackBuffers[BUFFER_COUNT] = {};
-	ComPtr<ID3D12Resource>	mSceneColorStagingBuffers[BUFFER_COUNT] = {};
+	ComPtr<ID3D12Resource>	mSceneColorStagingBuffer;
 
 	TracyD3D12Ctx	mGraphicsProfilingCtx;
 	TracyD3D12Ctx	mComputeProfilingCtx;
@@ -181,7 +181,7 @@ public:
 	{
 		DXGI_SWAP_CHAIN_FLAG SwapChainFlag = (DXGI_SWAP_CHAIN_FLAG)(DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
 
-		mTearingSupported = false;// CheckTearingSupport(mDXGIFactory);
+		mTearingSupported = CheckTearingSupport(mDXGIFactory);
 		if (mTearingSupported)
 		{
 			SwapChainFlag = (DXGI_SWAP_CHAIN_FLAG)(SwapChainFlag | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
@@ -256,10 +256,7 @@ public:
 			}
 		}
 
-		for (int i = 0; i < BUFFER_COUNT; i++)
-		{
-			mSceneColorStagingBuffers[i] = CreateBuffer(mSceneColorSmall.Size.x * mSceneColorSmall.Size.y * 4, false, true);
-		}
+		mSceneColorStagingBuffer = CreateBuffer(mSceneColorSmall.Size.x * mSceneColorSmall.Size.y * 4, false, true);
 
 		mDSVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 		UpdateRenderTargetViews(Window.mSize);

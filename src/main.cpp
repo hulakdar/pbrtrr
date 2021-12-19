@@ -19,6 +19,8 @@
 #include <thread>
 #include <atomic>
 
+#include <immintrin.h>
+
 #define CAPTURE_SCREEN 1
 
 struct MeshData
@@ -175,9 +177,56 @@ public:
 	}
 };
 
+std::thread		Workers[4];
+
+TracyLockable(Mutex, WorkerLock);
+std::condition_variable_any WakeUpWorker;
+std::queue<eastl::function<void(void)>> WorkQueue;
+
+size_t EnqueueWork(eastl::function<void(void)> Work)
+{
+	//unsigned long index;
+	//size_t bits;
+	//do
+	//{
+		//bits = WorkerStatusBitfield;
+		//index = _tzcnt_u64(bits);
+	//} while (!WorkerStatusBitfield.compare_exchange_strong(bits, bits & ~(1ULL << index)));
+
+	//if (index == 64)
+	//{
+		//Work();
+		return -1;
+	//}
+
+	//if (Workers[index].joinable())
+	//{
+		//Workers[index].join();
+	//}
+
+	//Workers[index] = std::thread(
+		//[Work, index]() {
+			//Work();
+//
+			//Sleep(100);
+			//size_t bits;
+			//do
+			//{
+				//bits = WorkerStatusBitfield;
+			//} while (!WorkerStatusBitfield.compare_exchange_strong(bits, bits | (1ULL << index)));
+		//}
+	//);
+	//return index;
+}
+
 int main(void)
 {
 	Debug::Scope DebugScopeObject;
+
+	for (int i = 0; i < ArraySize(Workers); ++i)
+	{
+		
+	}
 
 	System::Window Window;
 	Window.Init();
@@ -583,13 +632,9 @@ int main(void)
 	ComPtr<ID3D12GraphicsCommandList> CommandList = RenderContext.CreateCommandList(CommandAllocators[0], D3D12_COMMAND_LIST_TYPE_DIRECT);
 	SetD3DName(CommandList, L"Command list");
 
-	struct ReadBackData
-	{
-		UINT64 FenceValue;
-		UINT64 BufferIndex;
-	};
-	TArray<ReadBackData> ReadBackQueue;
 	UINT64 WindowStateDirtyFlushes = 0;
+	std::atomic<bool> ReadbackInflight;
+	UINT64  ReadBackReadyFence = 0;
 
 	while (!glfwWindowShouldClose(Window.mHandle))
 	{
@@ -642,11 +687,14 @@ int main(void)
 		ComPtr<ID3D12CommandAllocator>& CommandAllocator = CommandAllocators[RenderContext.mCurrentBackBufferIndex];
 		ComPtr<ID3D12Fence>& Fence = FrameFences[RenderContext.mCurrentBackBufferIndex];
 
-		if (!ReadBackQueue.empty() && ReadBackQueue.front().FenceValue < FrameFenceValues[RenderContext.mCurrentBackBufferIndex])
+		if (ReadbackInflight && ReadBackReadyFence < FrameFenceValues[RenderContext.mCurrentBackBufferIndex])
 		{
 			ZoneScopedN("Readback screen capture");
-			UINT64 BufferIndex = ReadBackQueue.front().BufferIndex;
-			ComPtr<ID3D12Resource>& Resource = RenderContext.mSceneColorStagingBuffers[BufferIndex];
+
+			int x = RenderContext.mSceneColorSmall.Size.x;
+			int y = RenderContext.mSceneColorSmall.Size.y;
+
+			ComPtr<ID3D12Resource>& Resource = RenderContext.mSceneColorStagingBuffer;
 
 			UINT   RowCount;
 			UINT64 RowPitch;
@@ -654,15 +702,31 @@ int main(void)
 			D3D12_RESOURCE_DESC Desc = Resource->GetDesc();
 			RenderContext.mDevice->GetCopyableFootprints(&Desc, 0, 1, 0, NULL, &RowCount, &RowPitch, &ResourceSize);
 
-			D3D12_RANGE Range;
-			Range.Begin = 0;
-			Range.End = (UINT64)RowCount * RowPitch;
-			void* Data;
-			Resource->Map(0, &Range, &Data);
-			FrameImage(Data, RenderContext.mSceneColorSmall.Size.x, RenderContext.mSceneColorSmall.Size.y, CurrentFenceValue - ReadBackQueue.front().FenceValue - WindowStateDirtyFlushes, false);
-			Resource->Unmap(0, NULL);
+			EnqueueWork(
+				[
+					WhenFunctionCalled = CurrentFenceValue,
+					&ReadbackInflight,
+					&CurrentFenceValue,
+					x, y,
+					ResourcePtr = Resource.Get(),
+					ResourceSize = RowCount * RowPitch,
+					FrameLagValue = ReadBackReadyFence + WindowStateDirtyFlushes
+				]
+				() {
+					ZoneScopedN("Uploading screenshot to Tracy");
+					D3D12_RANGE Range;
+					Range.Begin = 0;
+					Range.End = (UINT64)ResourceSize;
+					void* Data;
+					ResourcePtr->Map(0, &Range, &Data);
+					Debug::Print("Current fence value: ", CurrentFenceValue, "FrameLag: ", FrameLagValue, "WhenFunctionCalled", WhenFunctionCalled);
 
-			ReadBackQueue.erase(ReadBackQueue.begin());
+					FrameImage(Data, x, y, 3, false);
+					ResourcePtr->Unmap(0, NULL);
+
+					ReadbackInflight = false;
+				}
+			);
 		}
 
 		{
@@ -799,6 +863,7 @@ int main(void)
 		}
 
 #if TRACY_ENABLE || CAPTURE_SCREEN // Send screenshot to Tracy
+		if (TracyIsConnected && !ReadbackInflight)
 		{
 			TracyD3D12Zone(RenderContext.mGraphicsProfilingCtx, CommandList.Get(), "Downsample scenecolor to readback");
 
@@ -849,7 +914,7 @@ int main(void)
 				bufferFootprint.Footprint.RowPitch = RowPitch;
 				bufferFootprint.Footprint.Format = Small.Format;
 
-				CD3DX12_TEXTURE_COPY_LOCATION Dst(RenderContext.mSceneColorStagingBuffers[RenderContext.mCurrentBackBufferIndex].Get(), bufferFootprint);
+				CD3DX12_TEXTURE_COPY_LOCATION Dst(RenderContext.mSceneColorStagingBuffer.Get(), bufferFootprint);
 				CD3DX12_TEXTURE_COPY_LOCATION Src(Small.Resource.Get());
 				CommandList->CopyTextureRegion(&Dst,0,0,0,&Src,nullptr);
 			}
@@ -871,11 +936,10 @@ int main(void)
 		}
 
 #if TRACY_ENABLE || CAPTURE_SCREEN
+		if (TracyIsConnected && !ReadbackInflight)
 		{
-			ReadBackData NewItem;
-			NewItem.BufferIndex = RenderContext.mCurrentBackBufferIndex;
-			NewItem.FenceValue = FrameFenceValues[RenderContext.mCurrentBackBufferIndex];
-			ReadBackQueue.push_back(NewItem);
+			ReadBackReadyFence = FrameFenceValues[RenderContext.mCurrentBackBufferIndex];
+			ReadbackInflight = true;
 		}
 #endif
 
@@ -897,5 +961,9 @@ int main(void)
 	Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex - 1], CurrentFenceValue, WaitEvent);
 	RenderContext.WaitForUploadFinish();
 	CloseHandle(WaitEvent);
+
+	for (auto& Worker : Workers)
+		if (Worker.joinable())
+			Worker.join();
 }
 
