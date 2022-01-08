@@ -12,7 +12,6 @@
 #include <d3dcompiler.h>
 #include <Tracy.hpp>
 #include <TracyD3D12.hpp>
-#include <Containers/UniquePtr.h>
 
 //#define TEST_WARP
 
@@ -34,7 +33,6 @@ inline void PrintBlob(ID3DBlob* ErrorBlob)
 {
 	std::string_view Str((char *)ErrorBlob->GetBufferPointer(), ErrorBlob->GetBufferSize());
 	Debug::Print(Str);
-	DEBUG_BREAK();
 }
 
 inline ComPtr<ID3DBlob> CompileShader(const char *FileName, const char *EntryPoint, const char *TargetVersion)
@@ -57,6 +55,7 @@ inline ComPtr<ID3DBlob> CompileShader(const char *FileName, const char *EntryPoi
 		if (!SUCCEEDED(HR))
 		{
 			PrintBlob(ErrorBlob.Get());
+			DEBUG_BREAK();
 		}
 	}
 
@@ -166,8 +165,8 @@ public:
 	TextureData		mSceneColor = {};
 	TextureData		mSceneColorSmall = {};
 	TextureData		mScreenshotStaging = {};
+	TextureData		mBackBuffers[BUFFER_COUNT] = {};
 
-	ComPtr<ID3D12Resource>	mBackBuffers[BUFFER_COUNT] = {};
 	ComPtr<ID3D12Resource>	mSceneColorStagingBuffer;
 
 	TracyD3D12Ctx	mGraphicsProfilingCtx;
@@ -189,7 +188,7 @@ public:
 
 		for (int i = 0; i < BUFFER_COUNT; ++i)
 		{
-			mBackBuffers[i].Reset();
+			mBackBuffers[i].Resource.Reset();
 		}
 
 		if (mSwapChain)
@@ -213,7 +212,7 @@ public:
 		{
 			D3D12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
 				DXGI_FORMAT_D24_UNORM_S8_UINT,
-				Window.mSize.x, Window.mSize.y,
+				Window.mSize.x / 2, Window.mSize.y / 2,
 				1, 1, // ArraySize, MipLevels
 				1, 0, // SampleCount, SampleQuality
 				D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL	
@@ -227,7 +226,7 @@ public:
 
 		{
 			mSceneColor.Format = SCENE_COLOR_FORMAT;
-			mSceneColor.Size = IVector2(Window.mSize.x, Window.mSize.y);
+			mSceneColor.Size = IVector2(Window.mSize.x / 2, Window.mSize.y / 2);
 
 			D3D12_CLEAR_VALUE ClearValue = {};
 			FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
@@ -324,6 +323,7 @@ public:
 				if (!SUCCEEDED(HR))
 				{
 					PrintBlob(ErrorBlob.Get());
+					DEBUG_BREAK();
 				}
 			}
 
@@ -372,6 +372,7 @@ public:
 				if (!SUCCEEDED(HR))
 				{
 					PrintBlob(ErrorBlob.Get());
+					DEBUG_BREAK();
 				}
 			}
 
@@ -831,7 +832,7 @@ public:
 		PSODesc.PS.pShaderBytecode = PixelShader->GetBufferPointer();
 		PSODesc.pRootSignature = mRootSignature.Get();
 		PSODesc.NumRenderTargets = 1;
-		PSODesc.RTVFormats[0] = SCENE_COLOR_FORMAT;
+		PSODesc.RTVFormats[0] = BACK_BUFFER_FORMAT;
 		PSODesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
 		PSODesc.InputLayout.NumElements = ArraySize(PSOLayout);
 		PSODesc.InputLayout.pInputElementDescs = PSOLayout;
@@ -869,7 +870,7 @@ public:
 	UINT64 ImIndexHighwatermarks[BUFFER_COUNT] = {};
 	ComPtr<ID3D12Resource> ImGuiVertexBuffers[BUFFER_COUNT];
 	ComPtr<ID3D12Resource> ImGuiIndexBuffers[BUFFER_COUNT];
-	void RenderGUI(ComPtr<ID3D12GraphicsCommandList>& CommandList, System::Window& Window, TextureData& Font)
+	void RenderGUI(ComPtr<ID3D12GraphicsCommandList>& CommandList, System::Window& Window, TextureData& Font, TextureData& RenderTarget)
 	{
 		ZoneScoped;
 
@@ -942,12 +943,12 @@ public:
 			);
 		}
 
-		D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetRTVHandle(mSceneColor.RTVIndex);
+		D3D12_CPU_DESCRIPTOR_HANDLE rtv = GetRTVHandle(RenderTarget);
 		CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
 		CommandList->SetPipelineState(GuiPSO.Get());
 		CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-		Math::Vector2 RenderTargetSize(mSceneColor.Size.x, mSceneColor.Size.y);
+		Math::Vector2 RenderTargetSize(RenderTarget.Size.x, RenderTarget.Size.y);
 		CommandList->SetGraphicsRoot32BitConstants(1, 2, &RenderTargetSize, 0);
 
 		D3D12_INDEX_BUFFER_VIEW ImGuiIndexBufferView;
@@ -994,17 +995,18 @@ public:
 		return rtv;
 	}
 
-	D3D12_CPU_DESCRIPTOR_HANDLE GetGeneralHandle(UINT Index)
-	{
-		CHECK(Index != UINT_MAX, "Uninitialized index");
-		CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(mGeneralDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-			Index, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV]);
+	//D3D12_CPU_DESCRIPTOR_HANDLE GetGeneralHandle(UINT Index)
+	//{
+		//CHECK(Index != UINT_MAX, "Uninitialized index");
+		//CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(mGeneralDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+			//Index, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV]);
+		//return rtv;
+	//}
 
-		return rtv;
-	}
-
-	D3D12_CPU_DESCRIPTOR_HANDLE GetRTVHandle(UINT Index)
+	D3D12_CPU_DESCRIPTOR_HANDLE GetRTVHandle(TextureData& Texture)
 	{
+		UINT Index = Texture.RTVIndex;
+
 		CHECK(Index != UINT_MAX, "Uninitialized index");
 		CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(mRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
 			Index, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
@@ -1012,13 +1014,17 @@ public:
 		return rtv;
 	}
 
-	D3D12_CPU_DESCRIPTOR_HANDLE GetRTVHandleForBackBuffer()
+	TextureData& GetCurrentBackBuffer()
 	{
-		CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(mRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-			mCurrentBackBufferIndex, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
-
-		return rtv;
+		return mBackBuffers[mCurrentBackBufferIndex];
 	}
+
+	//D3D12_CPU_DESCRIPTOR_HANDLE GetRTVHandleForBackBuffer()
+	//{
+		//CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(mRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
+			//mCurrentBackBufferIndex, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
+		//return rtv;
+	//}
 
 	D3D12_CPU_DESCRIPTOR_HANDLE GetDSVHandle()
 	{
@@ -1101,8 +1107,8 @@ private:
 		ComPtr<IDXGISwapChain2> Result;
 
 		DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-		swapChainDesc.Width = (UINT)Window.mSize.x;
-		swapChainDesc.Height = (UINT)Window.mSize.y;
+		swapChainDesc.Width = Window.mSize.x;
+		swapChainDesc.Height = Window.mSize.y;
 		swapChainDesc.Format = BACK_BUFFER_FORMAT;
 		swapChainDesc.Scaling = DXGI_SCALING_NONE;
 		swapChainDesc.SampleDesc.Quality = 0;
@@ -1122,7 +1128,7 @@ private:
 		return Result;
 	}
 
-	void UpdateRenderTargetViews(Math::Vector2 Size)
+	void UpdateRenderTargetViews(IVector2 Size)
 	{
 		ZoneScoped;
 		CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
@@ -1133,16 +1139,18 @@ private:
 		{
 			ComPtr<ID3D12Resource> backBuffer;
 			VALIDATE(mSwapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer)));
-	 
+
 			{
 				ScopedLock Lock(mDeviceMutex);
 				mDevice->CreateRenderTargetView(backBuffer.Get(), nullptr, rtvHandle);
 			}
-			
+
 			SetD3DName(backBuffer, L"Back buffer %d", i);
-	 
-			mBackBuffers[i] = backBuffer;
-	 
+			mBackBuffers[i].Name = StringFromFormat("Back buffer %d", i);
+			mBackBuffers[i].Resource = backBuffer;
+			mBackBuffers[i].RTVIndex = i;
+			mBackBuffers[i].Size = Size;
+
 			rtvHandle.Offset(mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
 		}
 	}

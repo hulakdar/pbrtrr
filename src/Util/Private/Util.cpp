@@ -6,7 +6,9 @@
 #include "Util/Util.h"
 #include <Util/Debug.h>
 
-TMap<const char*, String> FileCache;
+namespace {
+	TMap<const char*, String> FileCache;
+}
 
 void WaitForFenceValue(ComPtr<ID3D12Fence>& Fence, uint64_t FenceValue, HANDLE Event)
 {

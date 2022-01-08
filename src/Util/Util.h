@@ -4,6 +4,7 @@
 #include "Containers/Array.h"
 #include "Containers/ComPtr.h"
 #include "external/d3dx12.h"
+
 #define MOVE(x) EASTL_MOVE_INLINE(x)
 
 void WaitForFenceValue(ComPtr<ID3D12Fence>& Fence, uint64_t FenceValue, HANDLE Event);

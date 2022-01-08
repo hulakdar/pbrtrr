@@ -4,6 +4,7 @@
 #include "Util/Allocator.h"
 #include "Containers/String.h"
 #include "System/Window.h"
+#include "System/Thread.h"
 #include "Render/Context.h"
 
 #include "external/stb/stb_image.h"
@@ -19,9 +20,16 @@
 #include <thread>
 #include <atomic>
 
-#include <immintrin.h>
-
 #define CAPTURE_SCREEN 1
+
+struct Camera
+{
+	float Fov;// = 60;
+	float Near;// = 0.1;
+	float Far;// = 1000000;
+	Math::Vector3 Eye;// (0, 0, 2);
+	Math::Vector2 Angles;// (0, 0);
+};
 
 struct MeshData
 {
@@ -177,7 +185,7 @@ public:
 	}
 };
 
-std::thread		Workers[4];
+std::thread		Workers[1];
 
 bool WorkersShouldStop = false;
 
@@ -212,16 +220,12 @@ void WorkerProc()
 
 int main(void)
 {
+	gMainThreadID = CurrentThreadID();
+
+	Debug::Scope DebugScopeObject;
 	for (int i = 0; i < ArraySize(Workers); ++i)
 	{
 		Workers[i] = std::thread(&WorkerProc);
-	}
-
-	Debug::Scope DebugScopeObject;
-
-	for (int i = 0; i < ArraySize(Workers); ++i)
-	{
-		
 	}
 
 	System::Window Window;
@@ -244,9 +248,16 @@ int main(void)
 		TArray<UINT> MeshIDs;
 	};
 
+	Camera MainCamera;
+	MainCamera.Fov = 60;
+	MainCamera.Near = 0.1;
+	MainCamera.Far = 1000000;
+	MainCamera.Eye = Math::Vector3(0, 0, 2);
+	MainCamera.Angles = Math::Vector2(0, 0);
+
+	TArray<Mesh> Meshes;
 	TArray<Material> Materials;
 	TArray<MeshData> MeshDatas;
-	TArray<Mesh> Meshes;
 	TArray<TextureData> Textures;
 
 	{
@@ -255,7 +266,7 @@ int main(void)
 			ZoneScopedN("Scene file parsing");
 
 			Scene = Importer.ReadFile(
-				"content/DamagedHelmet.glb",
+				"content/Bistro/BistroExterior.fbx",
 				aiProcess_FlipWindingOrder | aiProcessPreset_TargetRealtime_Quality
 			);
 			if (Helper.ShouldProceed == false)
@@ -267,26 +278,24 @@ int main(void)
 
 		if (Scene->HasMaterials())
 		{
+			Materials.resize(Scene->mNumMaterials);
+			for (UINT i = 0; i < Scene->mNumMaterials; ++i)
 			{
-				Materials.resize(Scene->mNumMaterials);
-				for (UINT i = 0; i < Scene->mNumMaterials; ++i)
+				aiMaterial* MaterialPtr = Scene->mMaterials[i];
+				Material& Tmp = Materials[i];
+				Tmp.Name = String(MaterialPtr->GetName().C_Str());
+				for (UINT j = 0; j < MaterialPtr->GetTextureCount(aiTextureType_DIFFUSE); ++j)
 				{
-					aiMaterial* MaterialPtr = Scene->mMaterials[i];
-					Material &Tmp = Materials[i];
-					Tmp.Name = String(MaterialPtr->GetName().C_Str());
-					for (UINT j = 0; j < MaterialPtr->GetTextureCount(aiTextureType_DIFFUSE); ++j)
+					aiString TexPath;
+					MaterialPtr->GetTexture(aiTextureType_DIFFUSE, j, &TexPath);
+					if (TexPath.C_Str()[0] == '*')
 					{
-						aiString TexPath;
-						MaterialPtr->GetTexture(aiTextureType_DIFFUSE, j, &TexPath);
-						if (TexPath.C_Str()[0] == '*')
-						{
-							uint32_t Index = atoi(TexPath.C_Str() + 1);
-							Tmp.DiffuseTextures.push_back(Index);
-						}
-						else
-						{
-							DEBUG_BREAK();
-						}
+						uint32_t Index = atoi(TexPath.C_Str() + 1);
+						Tmp.DiffuseTextures.push_back(Index);
+					}
+					else
+					{
+						//DEBUG_BREAK();
 					}
 				}
 			}
@@ -380,6 +389,12 @@ int main(void)
 								MOVE(MeshIDs)
 							}
 						);
+					}
+					else if (strcmp(Current->mName.C_Str(), "Camera") == 0)
+					{
+						aiVector3D Location, Scale, Rotation;
+						CurrentTransform.Decompose(Scale, Rotation, Location);
+						MainCamera.Eye = Math::Vector3(&Location.x);
 					}
 				}
 			}
@@ -680,7 +695,7 @@ int main(void)
 		}
 		ImGui::End();
 
-		ComPtr<ID3D12Resource>& BackBuffer = RenderContext.mBackBuffers[RenderContext.mCurrentBackBufferIndex];
+		TextureData& BackBuffer = RenderContext.GetCurrentBackBuffer();
 		ComPtr<ID3D12CommandAllocator>& CommandAllocator = CommandAllocators[RenderContext.mCurrentBackBufferIndex];
 		ComPtr<ID3D12Fence>& Fence = FrameFences[RenderContext.mCurrentBackBufferIndex];
 
@@ -745,7 +760,7 @@ int main(void)
 			CD3DX12_RESOURCE_BARRIER barriers[] = {
 				// backbuffer(present -> render)
 				CD3DX12_RESOURCE_BARRIER::Transition(
-					BackBuffer.Get(),
+					BackBuffer.Resource.Get(),
 					D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET,
 					D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES
 				),
@@ -769,7 +784,7 @@ int main(void)
 			CommandList->RSSetScissorRects(1, &SceneColorScissor);
 
 			// Clear scene color and depth textures
-			D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandle(RenderContext.mSceneColor.RTVIndex);
+			D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandle(RenderContext.mSceneColor);
 			D3D12_CPU_DESCRIPTOR_HANDLE dsv = RenderContext.GetDSVHandle();
 			CommandList->OMSetRenderTargets(1, &rtv, true, &dsv);
 			{
@@ -783,23 +798,24 @@ int main(void)
 		// Mesh
 		{
 			using namespace Math;
-			static float Fov = 60;
-			static float Near = 0.1;
-			static float Far = 1000000;
-			static Vector3 Eye(0, 0, 2);
-			static Vector2 Angles(0, 0);
 
-			ImGui::SliderFloat("FOV", &Fov, 5, 160);
-			ImGui::SliderFloat("Near", &Near, 0.01, 3);
-			ImGui::SliderFloat("Far", &Far, 10000, 1000000);
-			ImGui::DragFloat3("Eye", &Eye.x);
-			ImGui::DragFloat2("Target", &Angles.x, 0.05);
+			ImGui::SliderFloat("FOV", &MainCamera.Fov, 5, 160);
+			ImGui::SliderFloat("Near", &MainCamera.Near, 0.01, 3);
+			ImGui::SliderFloat("Far", &MainCamera.Far, 10000, 1000000);
+			ImGui::DragFloat3("Eye", &MainCamera.Eye.x);
+			ImGui::DragFloat2("Target", &MainCamera.Angles.x, 0.05);
 
 			TracyD3D12Zone(RenderContext.mGraphicsProfilingCtx, CommandList.Get(), "Render Meshes");
 
 			ZoneScopedN("Drawing meshes");
 
 			RenderContext.BindDescriptors(CommandList, DefaultTexture);
+
+			float Fov = MainCamera.Fov;
+			float Near = MainCamera.Near;
+			float Far = MainCamera.Far;
+			Vector2& Angles = MainCamera.Angles;
+			Vector3& Eye = MainCamera.Eye;
 
 			CommandList->SetPipelineState(SimplePSO.Get());
 			CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -824,8 +840,6 @@ int main(void)
 			}
 		}
 
-		RenderContext.RenderGUI(CommandList, Window, Gui.FontTexData);
-
 		// SceneColor(render -> srv)
 		{
 			CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -849,13 +863,18 @@ int main(void)
 			CommandList->IASetVertexBuffers(0, 1, &Quad.VertexBufferView);
 			CommandList->IASetIndexBuffer(&Quad.IndexBufferView);
 
-			D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandleForBackBuffer();
+			D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandle(BackBuffer);
 			CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
-			CommandList->RSSetViewports(1, &Window.mViewport);
-			CommandList->RSSetScissorRects(1, &Window.mScissorRect);
+
+			CD3DX12_VIEWPORT	Viewport = CD3DX12_VIEWPORT(0.f, 0.f, Window.mSize.x, Window.mSize.y);
+			CD3DX12_RECT		ScissorRect = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
+			CommandList->RSSetViewports(1, &Viewport);
+			CommandList->RSSetScissorRects(1, &ScissorRect);
 
 			CommandList->DrawIndexedInstanced(3, 1, 0, 0, 0);
 		}
+
+		RenderContext.RenderGUI(CommandList, Window, Gui.FontTexData, RenderContext.GetCurrentBackBuffer());
 
 #if TRACY_ENABLE || CAPTURE_SCREEN // Send screenshot to Tracy
 		if (TracyIsConnected && !ReadbackInflight && !WorkerInProgress)
@@ -877,7 +896,7 @@ int main(void)
 				CD3DX12_VIEWPORT	SmallViewport = CD3DX12_VIEWPORT(0.f, 0.f, Size.x, Size.y);
 				CD3DX12_RECT		SmallScissor = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
 
-				D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandle(Small.RTVIndex);
+				D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandle(Small);
 				CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
 
 				CommandList->SetPipelineState(DownsampleRasterPSO.Get());
@@ -915,10 +934,11 @@ int main(void)
 			}
 		}
 #endif
+
 		// backbuffer(render -> present)
 		{
 			CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-				BackBuffer.Get(),
+				BackBuffer.Resource.Get(),
 				D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
 			CommandList->ResourceBarrier(1, &barrier);
 		}
@@ -943,7 +963,6 @@ int main(void)
 			RenderContext.Present();
 		}
 		RenderContext.mCurrentBackBufferIndex = (RenderContext.mCurrentBackBufferIndex + 1) % Render::Context::BUFFER_COUNT;
-		//Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex - 1], CurrentFenceValue, WaitEvent);
 	}
 
 	Importer.SetProgressHandler(nullptr);

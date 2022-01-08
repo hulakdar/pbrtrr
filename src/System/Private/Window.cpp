@@ -1,14 +1,12 @@
-#include "Window.h"
+#include "System/Window.h"
 
 void System::Callbacks::WindowSize(GLFWwindow* window, int width, int height)
 {
 	Window *user_this = (Window*)glfwGetWindowUserPointer(window);
 
-	if ((int)user_this->mSize.x != width || (int)user_this->mSize.y != height)
+	if (user_this->mSize.x != width || user_this->mSize.y != height)
 	{
-		user_this->mSize = Vector2(width, height);
-		user_this->mViewport = CD3DX12_VIEWPORT(0.f, 0.f, user_this->mSize.x, user_this->mSize.y);
-
+		user_this->mSize = IVector2(width, height);
 		user_this->mWindowStateDirty = true;
 	}
 }
