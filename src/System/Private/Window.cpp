@@ -1,5 +1,10 @@
 #include "System/Window.h"
 
+void System::Callbacks::Error(int error, const char* description)
+{
+	Debug::Print(error, ": ", description);
+}
+
 void System::Callbacks::WindowSize(GLFWwindow* window, int width, int height)
 {
 	Window *user_this = (Window*)glfwGetWindowUserPointer(window);
@@ -15,10 +20,10 @@ void System::Callbacks::Scroll(GLFWwindow* window, double xoffset, double yoffse
 {
 	Window *user_this = (Window*)glfwGetWindowUserPointer(window);
 
-	user_this->mScrollOffset = Vector2(xoffset, yoffset);
+	user_this->mScrollOffset = Vector2((float)xoffset, (float)yoffset);
 }
 
-void System::Callbacks::Key(GLFWwindow* window, int key, int scancode, int action, int mods)
+void System::Callbacks::Key(GLFWwindow* window, int key, int /*scancode*/, int /*action*/, int /*mods*/)
 {
 	Window *user_this = (Window*)glfwGetWindowUserPointer(window);
 
@@ -35,7 +40,7 @@ void System::Callbacks::Drop(GLFWwindow* window, int path_count, const char* pat
 	}
 }
 
-void System::Callbacks::MouseButton(GLFWwindow* window, int button, int action, int mods)
+void System::Callbacks::MouseButton(GLFWwindow* window, int button, int action, int /*mods*/)
 {
 	Window *user_this = (Window*)glfwGetWindowUserPointer(window);
 

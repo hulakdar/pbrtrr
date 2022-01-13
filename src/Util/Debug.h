@@ -1,15 +1,13 @@
 #pragma once
 
-#include <sstream>
-#include <iostream>
 #include <windows.h>
+#include <iostream>
 
 #define DEBUG_BREAK() \
 		if (IsDebuggerPresent()) \
 		{ \
 			__debugbreak(); \
 		}
-
 
 #ifndef RELEASE
 # define CHECK(x, msg) \
@@ -22,8 +20,7 @@
 # define CHECK_RETURN(x, msg, ret) \
 		if (!(x)) \
 		{ \
-			Debug::Print(msg); \
-			DEBUG_BREAK(); \
+			CHECK(x, msg); \
 			return ret; \
 		}
 
@@ -42,40 +39,9 @@
 # define DISABLE_OPTIMIZATION __pragma(optimize("", off))
 # define ENABLE_OPTIMIZATION __pragma(optimize("", on))
 
+void StartDebugSystem();
+
 namespace Debug {
-	class Stream : public std::stringbuf
-	{
-	public:
-		~Stream() { sync(); }
-		int sync()
-		{
-			::OutputDebugStringA(str().c_str());
-			str(std::string()); // Clear the string buffer
-			return 0;
-		}
-	};
-
-	class WStream : public std::wstringbuf
-	{
-	public:
-		~WStream() { sync(); }
-		int sync()
-		{
-			::OutputDebugStringW(str().c_str());
-			str(std::wstring()); // Clear the string buffer
-			return 0;
-		}
-	};
-
-	class Scope
-	{
-		Stream mStream;
-		WStream mWStream;
-	public:
-		Scope();
-		~Scope();
-	};
-
 	template <typename T>
 	void PrintImpl(T Arg)
 	{
@@ -101,3 +67,4 @@ namespace Debug {
 
 	bool ValidateImpl(long Result);
 }
+

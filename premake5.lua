@@ -53,7 +53,6 @@ end
 if _ACTION == "vs2017" then
     libdirs {"./thirdparty/glfw/lib-vc2017"}
 else
-
     libdirs {"./thirdparty/glfw/lib-vc2019"}
 end
 
@@ -98,6 +97,8 @@ end
 
     defines {
         "_CRT_SECURE_NO_WARNINGS",
+        "WIN32_LEAN_AND_MEAN",
+        "NOMINMAX",
         "WIN32",
         "_WINDOWS",
         "GLFW_EXPOSE_NATIVE_WIN32"

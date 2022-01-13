@@ -20,3 +20,20 @@ static String StringFromFormat(const char* Format, ...)
 	return String(Result);
 }
 
+static bool EndsWith(StringView Word, StringView Suffix)
+{
+	if (Word.length() < Suffix.length())
+	{
+		return false;
+	}
+
+	for (size_t i = Word.length() - Suffix.length(), j = 0; i < Word.length();)
+	{
+		if (Word[i++] != Suffix[j++])
+		{
+			return false;
+		}
+	}
+	return true;
+}
+

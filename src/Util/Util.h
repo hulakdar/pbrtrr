@@ -14,7 +14,7 @@ uint64_t Signal(ComPtr<ID3D12CommandQueue>& CommandQueue, ComPtr<ID3D12Fence>& F
 template <typename T, int count>
 int ArraySize(T (&)[count]) { return count; }
 
-StringView LoadWholeFile(const char* Path);
+StringView LoadWholeFile(StringView Path);
 
 static wchar_t g_ScratchNameBuffer[1024];
 

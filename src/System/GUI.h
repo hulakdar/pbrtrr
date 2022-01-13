@@ -2,11 +2,12 @@
 #include <imgui.h>
 
 #include "System/Window.h"
+#include "Render/RenderThread.h"
 
 template<typename T>
 inline ImVec2 ToImVec2(T Vec)
 {
-	return ImVec2(Vec.x, Vec.y);
+	return ImVec2((float)Vec.x, (float)Vec.y);
 }
 
 namespace System
@@ -15,20 +16,23 @@ namespace System
 class GUI
 {
 public:
-	void Init(const Window& WindowHandle, Render::Context& RenderContext)
+	void Init(const Window& WindowHandle)
 	{
 		ImGui::CreateContext();
 
 		ImGuiIO& io = ImGui::GetIO();
-		io.DisplaySize = ImVec2(WindowHandle.mSize.x, WindowHandle.mSize.y);
+		io.DisplaySize = ImVec2((float)WindowHandle.mSize.x, (float)WindowHandle.mSize.y);
 
-		io.Fonts->AddFontFromFileTTF("content/fonts/Roboto.ttf", 20);
-		uint8_t *Data = nullptr;
-		io.Fonts->GetTexDataAsAlpha8(&Data, &FontTexData.Size.x, &FontTexData.Size.y);
-		FontTexData.Format = DXGI_FORMAT_R8_UNORM;
-		RenderContext.CreateTexture(FontTexData);
-		RenderContext.UploadTextureData(FontTexData, Data);
-		RenderContext.CreateSRV(FontTexData);
+		EnqueueRenderThreadWork([this](RenderContext& RenderContext) {
+			ImGuiIO& io = ImGui::GetIO();
+			io.Fonts->AddFontFromFileTTF("content/fonts/Roboto.ttf", 20);
+			uint8_t *Data = nullptr;
+			io.Fonts->GetTexDataAsAlpha8(&Data, &FontTexData.Size.x, &FontTexData.Size.y);
+			FontTexData.Format = DXGI_FORMAT_R8_UNORM;
+			RenderContext.CreateTexture(FontTexData);
+			RenderContext.UploadTextureData(FontTexData, Data);
+			RenderContext.CreateSRV(FontTexData);
+		});
 
 		io.IniFilename = NULL;
 		io.LogFilename = NULL;

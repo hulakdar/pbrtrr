@@ -3,9 +3,11 @@
 #include "Containers/ComPtr.h"
 #include "Util/Allocator.h"
 #include "Containers/String.h"
+#include "Containers/Queue.h"
 #include "System/Window.h"
 #include "System/Thread.h"
 #include "Render/Context.h"
+#include "Threading/Worker.h"
 
 #include "external/stb/stb_image.h"
 
@@ -15,10 +17,8 @@
 #include <assimp/mesh.h>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
-#include <Containers/Queue.h>
-#include <eathread/eathread.h>
-#include <thread>
 #include <atomic>
+#include <condition_variable>
 
 #define CAPTURE_SCREEN 1
 
@@ -33,11 +33,11 @@ struct Camera
 
 struct MeshData
 {
-	ComPtr<ID3D12Resource>		VertexBuffer;
-	ComPtr<ID3D12Resource>		IndexBuffer;
-	D3D12_VERTEX_BUFFER_VIEW	VertexBufferView;
-	D3D12_INDEX_BUFFER_VIEW		IndexBufferView;
-	uint32_t					MaterialIndex;
+	ComPtr<ID3D12Resource>	VertexBuffer;
+	ComPtr<ID3D12Resource>	IndexBuffer;
+	uint32_t				VertexBufferSize;
+	uint32_t				IndexBufferSize;
+	uint32_t				VertexSize;
 };
 
 struct Material
@@ -46,7 +46,7 @@ struct Material
 	TArray<uint32_t> DiffuseTextures;
 };
 
-TextureData ParseTexture(aiTexture* Texture, Render::Context& RenderContext)
+TextureData ParseTexture(aiTexture* Texture)
 {
 	TextureData Result;
 	uint8_t* Data = nullptr;
@@ -66,65 +66,51 @@ TextureData ParseTexture(aiTexture* Texture, Render::Context& RenderContext)
 		DEBUG_BREAK();
 	}
 
-	RenderContext.CreateTexture(Result);
-
-	{
-		CHECK(Data);
-		RenderContext.UploadTextureData(Result, Data);
-		free(Data);
-	}
-
-	RenderContext.CreateSRV(Result);
-
+	Result.RawData = Data;
 	return Result;
 }
 
-void AllocateMeshData(aiMesh* Mesh, Render::Context& RenderContext, MeshData& Result)
+void AllocateMeshData(aiMesh* Mesh, MeshData& Result)
 {
 	CHECK(Mesh->HasFaces(), "Mesh without faces?");
 
-	UINT64 VertexSize = sizeof(aiVector3D);
+	UINT VertexSize = sizeof(aiVector3D);
 
 	if (Mesh->HasNormals())
 	{
 		VertexSize += sizeof(aiVector3D);
 	}
 
-	UINT64 VertexColors = 0;
+	UINT VertexColors = 0;
 	while (Mesh->HasVertexColors(VertexColors))
 	{
 		VertexSize += 4;
 		VertexColors++;
 	}
 
-	UINT64 UVSets = 0;
+	UINT UVSets = 0;
 	while (Mesh->HasTextureCoords(UVSets))
 	{
 		VertexSize += sizeof(float) * Mesh->mNumUVComponents[UVSets];
 		UVSets++;
 	}
 
-	UINT64 VertexBufferSize = VertexSize * Mesh->mNumVertices;
+	UINT VertexBufferSize = VertexSize * Mesh->mNumVertices;
 	UINT IndexBufferSize = Mesh->mNumFaces * 3 * sizeof(unsigned int);
 
 	CHECK(VertexBufferSize != 0, "??");
 	CHECK(IndexBufferSize != 0, "??");
 
-	Result.VertexBuffer = RenderContext.CreateBuffer(VertexBufferSize);
-	Result.IndexBuffer = RenderContext.CreateBuffer(IndexBufferSize);
-
-	Result.VertexBufferView.BufferLocation = Result.VertexBuffer->GetGPUVirtualAddress();
-	Result.VertexBufferView.SizeInBytes = VertexBufferSize;
-	Result.VertexBufferView.StrideInBytes = VertexSize;
-
-	Result.IndexBufferView.BufferLocation = Result.IndexBuffer->GetGPUVirtualAddress();
-	Result.IndexBufferView.SizeInBytes = IndexBufferSize;
-	Result.IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+	Result.VertexBuffer = GetRenderContext().CreateBuffer(VertexBufferSize);
+	Result.IndexBuffer = GetRenderContext().CreateBuffer(IndexBufferSize);
+	Result.VertexBufferSize = VertexBufferSize;
+	Result.IndexBufferSize = IndexBufferSize;
+	Result.VertexSize = VertexSize;
 }
 
 void UploadMeshData(unsigned char* CpuPtr, aiMesh* Mesh)
 {
-	for (int i = 0; i < Mesh->mNumVertices; ++i)
+	for (UINT i = 0; i < Mesh->mNumVertices; ++i)
 	{
 		{
 			aiVector3D* Position = (aiVector3D*)CpuPtr;
@@ -163,7 +149,7 @@ void UploadMeshData(unsigned char* CpuPtr, aiMesh* Mesh)
 		}
 	}
 
-	for (int i = 0; i < Mesh->mNumFaces; ++i)
+	for (UINT i = 0; i < Mesh->mNumFaces; ++i)
 	{
 		CHECK(Mesh->mFaces[i].mNumIndices == 3, "Not triangles?");
 		::memcpy(CpuPtr, Mesh->mFaces[i].mIndices, 3 * sizeof(unsigned int));
@@ -185,57 +171,22 @@ public:
 	}
 };
 
-std::thread		Workers[1];
-
-bool WorkersShouldStop = false;
-
-TracyLockable(Mutex, WorkerLock);
-std::condition_variable_any WakeUpWorker;
-std::queue<eastl::function<void(void)>> WorkQueue;
-
-void EnqueueWork(eastl::function<void(void)> Work)
-{
-	std::lock_guard Lock(WorkerLock);
-	WorkQueue.push(Work);
-	WakeUpWorker.notify_one();
-}
-
-void WorkerProc()
-{
-	while (true)
-	{
-		std::unique_lock<LockableBase(Mutex)> Lock(WorkerLock);
-		WakeUpWorker.wait(Lock, []() { return WorkersShouldStop || !WorkQueue.empty(); });
-		if (WorkersShouldStop)
-		{
-			return;
-		}
-
-		std::function<void(void)> CurrentWorkItem = std::move(WorkQueue.front());
-		WorkQueue.pop();
-		Lock.unlock();
-		CurrentWorkItem();
-	}
-}
+#include "Render/RenderThread.h"
 
 int main(void)
 {
-	gMainThreadID = CurrentThreadID();
+	StartDebugSystem();
 
-	Debug::Scope DebugScopeObject;
-	for (int i = 0; i < ArraySize(Workers); ++i)
-	{
-		Workers[i] = std::thread(&WorkerProc);
-	}
+	gMainThreadID = CurrentThreadID();
+	StartWorkerThreads();
 
 	System::Window Window;
 	Window.Init();
 
-	Render::Context RenderContext;
-	RenderContext.Init(Window);
+	StartRenderThread(Window);
 
 	System::GUI Gui;
-	Gui.Init(Window, RenderContext);
+	Gui.Init(Window);
 
 	Assimp::Importer Importer;
 	ProgressBarHelper Helper;
@@ -266,7 +217,7 @@ int main(void)
 			ZoneScopedN("Scene file parsing");
 
 			Scene = Importer.ReadFile(
-				"content/Bistro/BistroExterior.fbx",
+				"content/DamagedHelmet.glb",
 				aiProcess_FlipWindingOrder | aiProcessPreset_TargetRealtime_Quality
 			);
 			if (Helper.ShouldProceed == false)
@@ -305,9 +256,8 @@ int main(void)
 					for (UINT i = 0; i < Scene->mNumTextures; ++i)
 					{
 						aiTexture* Texture = Scene->mTextures[i];
-						Textures.push_back(ParseTexture(Texture, RenderContext));
+						Textures.push_back(ParseTexture(Texture));
 					}
-					RenderContext.FlushUpload();
 				}
 			}
 		}
@@ -325,21 +275,21 @@ int main(void)
 				{
 					aiMesh* Mesh = Scene->mMeshes[i];
 					MeshData& Tmp = MeshDatas[i];
-					AllocateMeshData(Mesh, RenderContext, Tmp);
-					Tmp.MaterialIndex = Mesh->mMaterialIndex;
+					AllocateMeshData(Mesh, Tmp);
+					//Tmp.MaterialIndex = Mesh->mMaterialIndex;
 
 					UploadOffsets[i] = UploadBufferSize;
-					UploadBufferSize += Tmp.IndexBufferView.SizeInBytes + Tmp.VertexBufferView.SizeInBytes;
+					UploadBufferSize += Tmp.IndexBufferSize + Tmp.VertexBufferSize;
 				}
 
-				UploadBuffer = RenderContext.CreateBuffer(UploadBufferSize, true);
+				UploadBuffer = GetRenderContext().CreateBuffer(UploadBufferSize, true);
 
 				{
 					ZoneScopedN("Upload")
 
 					unsigned char* CpuPtr = NULL;
 					UploadBuffer->Map(0, NULL, (void**)&CpuPtr);
-					for (int i = 0; i < Scene->mNumMeshes; ++i)
+					for (UINT i = 0; i < Scene->mNumMeshes; ++i)
 					{
 						aiMesh* Mesh = Scene->mMeshes[i];
 						UploadMeshData(CpuPtr + UploadOffsets[i], Mesh);
@@ -365,7 +315,7 @@ int main(void)
 					ProcessingQueue.pop();
 
 					aiMatrix4x4 CurrentTransform = ParentTransform * Current->mTransformation;
-					for (int i = 0; i < Current->mNumChildren; ++i)
+					for (UINT i = 0; i < Current->mNumChildren; ++i)
 					{
 						ProcessingQueue.emplace(Current->mChildren[i], CurrentTransform);
 					}
@@ -374,7 +324,7 @@ int main(void)
 					{
 						TArray<UINT> MeshIDs;
 						MeshIDs.reserve(Current->mNumMeshes);
-						for (int i = 0; i < Current->mNumMeshes; ++i)
+						for (UINT i = 0; i < Current->mNumMeshes; ++i)
 						{
 							unsigned int MeshID = Current->mMeshes[i];
 							MeshIDs.push_back(MeshID);
@@ -399,19 +349,19 @@ int main(void)
 				}
 			}
 
-			ComPtr<ID3D12CommandAllocator> WorkerCommandAllocator = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY);
-			ComPtr<ID3D12GraphicsCommandList> WorkerCommandList = RenderContext.CreateCommandList(WorkerCommandAllocator, D3D12_COMMAND_LIST_TYPE_COPY);
+			ComPtr<ID3D12CommandAllocator> WorkerCommandAllocator = GetRenderContext().CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY);
+			ComPtr<ID3D12GraphicsCommandList> WorkerCommandList = GetRenderContext().CreateCommandList(WorkerCommandAllocator, D3D12_COMMAND_LIST_TYPE_COPY);
 			WorkerCommandList->Reset(WorkerCommandAllocator.Get(), nullptr);
 
 			{
-				TracyD3D12Zone(RenderContext.mCopyProfilingCtx, WorkerCommandList.Get(), "Copy Mesh Data to GPU");
+				TracyD3D12Zone(GetRenderContext().mCopyProfilingCtx, WorkerCommandList.Get(), "Copy Mesh Data to GPU");
 				{
 					ZoneScopedN("Fill command list for upload")
-					for (int i = 0; i < Scene->mNumMeshes; ++i)
+					for (UINT i = 0; i < Scene->mNumMeshes; ++i)
 					{
 						MeshData& Data = MeshDatas[i];
-						WorkerCommandList->CopyBufferRegion(Data.VertexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i], Data.VertexBufferView.SizeInBytes);
-						WorkerCommandList->CopyBufferRegion(Data.IndexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i] + Data.VertexBufferView.SizeInBytes, Data.IndexBufferView.SizeInBytes);
+						WorkerCommandList->CopyBufferRegion(Data.VertexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i], Data.VertexBufferSize);
+						WorkerCommandList->CopyBufferRegion(Data.IndexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i] + Data.VertexBufferSize, Data.IndexBufferSize);
 					}
 				}
 			}
@@ -419,161 +369,81 @@ int main(void)
 			WorkerCommandList->Close();
 			UINT64 CurrentFenceValue = 0;
 
-			ComPtr<ID3D12Fence> WorkerFrameFence = RenderContext.CreateFence();
-			CurrentFenceValue = RenderContext.ExecuteCopy(WorkerCommandList.Get(), WorkerFrameFence, CurrentFenceValue);
+			ComPtr<ID3D12Fence> WorkerFrameFence = GetRenderContext().CreateFence();
+			CurrentFenceValue = GetRenderContext().ExecuteCopy(WorkerCommandList.Get(), WorkerFrameFence, CurrentFenceValue);
 			HANDLE WorkerWaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
 			WaitForFenceValue(WorkerFrameFence, 1, WorkerWaitEvent);
 			CloseHandle(WorkerWaitEvent);
-			RenderContext.FlushUpload();
 		}
 	}
 
+	RenderContext& Context = GetRenderContext();
+
 	ComPtr<ID3D12PipelineState> SimplePSO;
-
 	{
-		{
-			TArray<D3D12_INPUT_ELEMENT_DESC> PSOLayout;
+		TArray<D3D12_INPUT_ELEMENT_DESC> PSOLayout;
 
-			D3D12_INPUT_ELEMENT_DESC Tmp = {};
+		D3D12_INPUT_ELEMENT_DESC Tmp = {};
 
-			Tmp.SemanticName = "POSITION";
-			Tmp.SemanticIndex = 0;
-			Tmp.Format = DXGI_FORMAT_R32G32B32_FLOAT;
-			Tmp.InputSlot = 0;
-			Tmp.AlignedByteOffset = 0;
-			PSOLayout.push_back(Tmp);
+		Tmp.SemanticName = "POSITION";
+		Tmp.SemanticIndex = 0;
+		Tmp.Format = DXGI_FORMAT_R32G32B32_FLOAT;
+		Tmp.InputSlot = 0;
+		Tmp.AlignedByteOffset = 0;
+		PSOLayout.push_back(Tmp);
 
-			Tmp.SemanticName = "TEXCOORD";
-			Tmp.SemanticIndex = 0;
-			Tmp.Format = DXGI_FORMAT_R32G32_FLOAT;
-			Tmp.InputSlot = 0;
-			Tmp.AlignedByteOffset = 12;
-			PSOLayout.push_back(Tmp);
+		Tmp.SemanticName = "TEXCOORD";
+		Tmp.SemanticIndex = 0;
+		Tmp.Format = DXGI_FORMAT_R32G32_FLOAT;
+		Tmp.InputSlot = 0;
+		Tmp.AlignedByteOffset = 12;
+		PSOLayout.push_back(Tmp);
 
-			ComPtr<ID3DBlob> VertexShader = Render::CompileShader(
-				"content/shaders/Simple.hlsl",
-				"MainVS", "vs_5_1"
-			);
-
-			ComPtr<ID3DBlob> PixelShader = Render::CompileShader(
-				"content/shaders/Simple.hlsl",
-				"MainPS", "ps_5_1"
-			);
-
-			D3D12_GRAPHICS_PIPELINE_STATE_DESC PSODesc = {};
-			PSODesc.VS.BytecodeLength = VertexShader->GetBufferSize();
-			PSODesc.VS.pShaderBytecode = VertexShader->GetBufferPointer();
-			PSODesc.PS.BytecodeLength = PixelShader->GetBufferSize();
-			PSODesc.PS.pShaderBytecode = PixelShader->GetBufferPointer();
-			PSODesc.pRootSignature = RenderContext.mRootSignature.Get();
-			PSODesc.NumRenderTargets = 1;
-			PSODesc.RTVFormats[0] = Render::Context::SCENE_COLOR_FORMAT;
-			PSODesc.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
-			PSODesc.InputLayout.NumElements = PSOLayout.size();
-			PSODesc.InputLayout.pInputElementDescs = PSOLayout.data();
-			PSODesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-			PSODesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-			PSODesc.SampleDesc.Count = 1;
-			PSODesc.DepthStencilState.DepthEnable = true;
-			PSODesc.DepthStencilState.StencilEnable = false;
-			PSODesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-			PSODesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-			PSODesc.SampleMask = 0xFFFFFFFF;
-			PSODesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-			SimplePSO = RenderContext.CreatePSO(&PSODesc);
-		}
-
-		RenderContext.FlushUpload();
+		DXGI_FORMAT RenderTargetFormat = RenderContext::SCENE_COLOR_FORMAT;
+		TArray<StringView> EntryPoints = {"MainPS", "MainVS"};
+		SimplePSO = Context.CreateShaderCombination(
+			PSOLayout,
+			EntryPoints,
+			"content/shaders/Simple.hlsl",
+			&RenderTargetFormat,
+			DXGI_FORMAT_D24_UNORM_S8_UINT
+		);
 	}
 
 	ComPtr<ID3D12PipelineState> BlitPSO;
+
 	{
-		TArray<D3D12_INPUT_ELEMENT_DESC> PSOLayout;
-		{
-			D3D12_INPUT_ELEMENT_DESC Tmp = {};
+		D3D12_INPUT_ELEMENT_DESC InputDesc = {};
+		InputDesc.SemanticName = "POSITION";
+		InputDesc.SemanticIndex = 0;
+		InputDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+		InputDesc.InputSlot = 0;
+		InputDesc.AlignedByteOffset = 0;
 
-			Tmp.SemanticName = "POSITION";
-			Tmp.SemanticIndex = 0;
-			Tmp.Format = DXGI_FORMAT_R32G32_FLOAT;
-			Tmp.InputSlot = 0;
-			Tmp.AlignedByteOffset = 0;
-			PSOLayout.push_back(Tmp);
-		}
-
-		ComPtr<ID3DBlob> VertexShader = Render::CompileShader(
-			"content/shaders/Blit.hlsl",
-			"MainVS", "vs_5_1"
-		);
-
-		ComPtr<ID3DBlob> PixelShader = Render::CompileShader(
-			"content/shaders/Blit.hlsl",
-			"MainPS", "ps_5_1"
-		);
-
-		D3D12_GRAPHICS_PIPELINE_STATE_DESC PSODesc = {};
-		PSODesc.VS.BytecodeLength = VertexShader->GetBufferSize();
-		PSODesc.VS.pShaderBytecode = VertexShader->GetBufferPointer();
-		PSODesc.PS.BytecodeLength = PixelShader->GetBufferSize();
-		PSODesc.PS.pShaderBytecode = PixelShader->GetBufferPointer();
-		PSODesc.pRootSignature = RenderContext.mRootSignature.Get();
-		PSODesc.NumRenderTargets = 1;
-		PSODesc.RTVFormats[0] = Render::Context::BACK_BUFFER_FORMAT;
-		PSODesc.InputLayout.NumElements = PSOLayout.size();
-		PSODesc.InputLayout.pInputElementDescs = PSOLayout.data();
-		PSODesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-		PSODesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-		PSODesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-		PSODesc.SampleDesc.Count = 1;
-		PSODesc.SampleMask = 0xFFFFFFFF;
-		PSODesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-		BlitPSO = RenderContext.CreatePSO(&PSODesc);
+		DXGI_FORMAT RenderTargetFormat = RenderContext::BACK_BUFFER_FORMAT;
+		TArray<StringView> EntryPoints = {"MainPS", "MainVS"};
+		BlitPSO = Context.CreateShaderCombination(&InputDesc, EntryPoints, "content/shaders/Blit.hlsl", &RenderTargetFormat);
 	}
 
 	ComPtr<ID3D12PipelineState> DownsampleRasterPSO;
 	{
-		TArray<D3D12_INPUT_ELEMENT_DESC> PSOLayout;
-		{
-			D3D12_INPUT_ELEMENT_DESC Tmp = {};
+		D3D12_INPUT_ELEMENT_DESC InputDesc = {};
 
-			Tmp.SemanticName = "POSITION";
-			Tmp.SemanticIndex = 0;
-			Tmp.Format = DXGI_FORMAT_R32G32_FLOAT;
-			Tmp.InputSlot = 0;
-			Tmp.AlignedByteOffset = 0;
-			PSOLayout.push_back(Tmp);
-		}
+		InputDesc.SemanticName = "POSITION";
+		InputDesc.SemanticIndex = 0;
+		InputDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+		InputDesc.InputSlot = 0;
+		InputDesc.AlignedByteOffset = 0;
 
-		ComPtr<ID3DBlob> VertexShader = Render::CompileShader(
+		TArray<StringView> EntryPoints = {"MainPS", "MainVS"};
+		DXGI_FORMAT RenderTargetFormat = RenderContext::READBACK_FORMAT;
+		DownsampleRasterPSO = Context.CreateShaderCombination(
+			&InputDesc, 
+			EntryPoints,
 			"content/shaders/Blit.hlsl",
-			"MainVS", "vs_5_1"
+			&RenderTargetFormat
 		);
-
-		ComPtr<ID3DBlob> PixelShader = Render::CompileShader(
-			"content/shaders/Blit.hlsl",
-			"MainPS", "ps_5_1"
-		);
-
-		D3D12_GRAPHICS_PIPELINE_STATE_DESC PSODesc = {};
-		PSODesc.VS.BytecodeLength = VertexShader->GetBufferSize();
-		PSODesc.VS.pShaderBytecode = VertexShader->GetBufferPointer();
-		PSODesc.PS.BytecodeLength = PixelShader->GetBufferSize();
-		PSODesc.PS.pShaderBytecode = PixelShader->GetBufferPointer();
-		PSODesc.pRootSignature = RenderContext.mRootSignature.Get();
-		PSODesc.NumRenderTargets = 1;
-		PSODesc.RTVFormats[0] = Render::Context::READBACK_FORMAT;
-		PSODesc.InputLayout.NumElements = PSOLayout.size();
-		PSODesc.InputLayout.pInputElementDescs = PSOLayout.data();
-		PSODesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-		PSODesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-		PSODesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-		PSODesc.SampleDesc.Count = 1;
-		PSODesc.SampleMask = 0xFFFFFFFF;
-		PSODesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-
-		DownsampleRasterPSO = RenderContext.CreatePSO(&PSODesc);
 	}
 
 	TextureData DefaultTexture;
@@ -581,13 +451,15 @@ int main(void)
 		uint8_t *Data = stbi_load("content/uvcheck.jpg", &DefaultTexture.Size.x, &DefaultTexture.Size.y, nullptr, 4);
 		DefaultTexture.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 
-		RenderContext.CreateTexture(DefaultTexture);
-		RenderContext.UploadTextureData(DefaultTexture, Data);
-		RenderContext.CreateSRV(DefaultTexture);
+		Context.CreateTexture(DefaultTexture);
+		Context.UploadTextureData(DefaultTexture, Data);
+		Context.CreateSRV(DefaultTexture);
 		stbi_image_free(Data);
 	}
 
 	MeshData Quad;
+	D3D12_INDEX_BUFFER_VIEW QuadIndexBufferView;
+	D3D12_VERTEX_BUFFER_VIEW QuadVertexBufferView;
 	{
 		uint16_t IndexData[] = {
 			0, 1, 2,
@@ -599,22 +471,27 @@ int main(void)
 			{3, 1},
 		};
 
-		Quad.IndexBuffer = RenderContext.CreateBuffer(
+		Quad.IndexBuffer = Context.CreateBuffer(
 			sizeof(IndexData)
 		);
+		Quad.IndexBufferSize = sizeof(IndexData);
 		SetD3DName(Quad.IndexBuffer, L"Quad IndexBuffer");
-		Quad.IndexBufferView = RenderContext.CreateIndexBufferView(
+
+		QuadIndexBufferView = Context.CreateIndexBufferView(
 			Quad.IndexBuffer,
 			IndexData,
 			sizeof(IndexData),
 			DXGI_FORMAT_R16_UINT
 		);
 
-		Quad.VertexBuffer = RenderContext.CreateBuffer(
+		Quad.VertexBuffer = Context.CreateBuffer(
 			sizeof(VertexData)
 		);
+		Quad.VertexBufferSize = sizeof(VertexData);
+
+		Quad.VertexSize = sizeof(Math::Vector2);
 		SetD3DName(Quad.VertexBuffer, L"Quad VertexBuffer");
-		Quad.VertexBufferView = RenderContext.CreateVertexBufferView(
+		QuadVertexBufferView = Context.CreateVertexBufferView(
 			Quad.VertexBuffer,
 			VertexData,
 			sizeof(VertexData),
@@ -622,11 +499,8 @@ int main(void)
 		);
 	}
 
-	RenderContext.InitGUIResources();
-	RenderContext.FlushUpload();
-
-	UINT64 CurrentFenceValue = 0;
-	UINT64 FrameFenceValues[3] = {};
+	//Context.InitGUIResources();
+	Context.FlushUpload();
 
 	HANDLE WaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
@@ -634,20 +508,113 @@ int main(void)
 	ComPtr<ID3D12Fence> FrameFences[3] = {};
 	for (int i = 0; i < 3; ++i)
 	{
-		CommandAllocators[i] = RenderContext.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT);
-		FrameFences[i] = RenderContext.CreateFence();
+		CommandAllocators[i] = Context.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT);
+		FrameFences[i] = Context.CreateFence();
 
 		SetD3DName(CommandAllocators[i], L"Command allocator %d", i);
 		SetD3DName(FrameFences[i], L"Fence %d", i);
 	}
-	ComPtr<ID3D12GraphicsCommandList> CommandList = RenderContext.CreateCommandList(CommandAllocators[0], D3D12_COMMAND_LIST_TYPE_DIRECT);
+	ComPtr<ID3D12GraphicsCommandList> CommandList = Context.CreateCommandList(CommandAllocators[0], D3D12_COMMAND_LIST_TYPE_DIRECT);
 	SetD3DName(CommandList, L"Command list");
 
-	UINT64 WindowStateDirtyFlushes = 0;
 	std::atomic<bool> ReadbackInflight;
 	std::atomic<bool> WorkerInProgress;
 	UINT64  ReadBackReadyFence = 0;
 
+	TextureData mSceneColor = {};
+	{
+		mSceneColor.Format = RenderContext::SCENE_COLOR_FORMAT;
+		mSceneColor.Size = IVector2(Window.mSize.x / 2, Window.mSize.y / 2);
+
+		D3D12_CLEAR_VALUE ClearValue = {};
+		FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
+		memcpy(ClearValue.Color, clearColor, sizeof(clearColor));
+		ClearValue.Format = RenderContext::SCENE_COLOR_FORMAT;
+
+		Context.CreateTexture(mSceneColor,
+			D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+			&ClearValue
+		);
+		Context.CreateSRV(mSceneColor);
+		Context.CreateRTV(mSceneColor);
+	}
+
+	TextureData DepthBuffer;
+	{
+		D3D12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+			DXGI_FORMAT_D24_UNORM_S8_UINT,
+			Window.mSize.x / 2, Window.mSize.y / 2,
+			1, 1, // ArraySize, MipLevels
+			1, 0, // SampleCount, SampleQuality
+			D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL	
+		);
+		D3D12_CLEAR_VALUE ClearValue = {};
+		ClearValue.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+		ClearValue.DepthStencil.Depth = 1.0f;
+
+		DepthBuffer.Format = TextureDesc.Format;
+		DepthBuffer.Size = Window.mSize;
+
+		DepthBuffer.Resource = Context.CreateResource(&TextureDesc, &RenderContext::DefaultHeapProps, D3D12_RESOURCE_STATE_DEPTH_WRITE, &ClearValue);
+		Context.CreateDSV(DepthBuffer);
+	}
+
+	TextureData mSceneColorSmall = {};
+	{
+		mSceneColorSmall.Format = RenderContext::READBACK_FORMAT;
+		mSceneColorSmall.Size = IVector2(960, 540);
+		Context.CreateTexture(mSceneColorSmall,
+			D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+			D3D12_RESOURCE_STATE_COPY_SOURCE,
+			nullptr
+		);
+		{
+			Context.CreateRTV(mSceneColorSmall);
+		}
+	}
+
+	ComPtr<ID3D12Resource>	mSceneColorStagingBuffer = Context.CreateBuffer(mSceneColorSmall.Size.x * mSceneColorSmall.Size.y * 4, false, true);
+
+	UINT64 ImVertexHighwatermarks[RenderContext::BUFFER_COUNT] = {};
+	UINT64 ImIndexHighwatermarks[RenderContext::BUFFER_COUNT] = {};
+	ComPtr<ID3D12Resource> ImGuiVertexBuffers[RenderContext::BUFFER_COUNT];
+	ComPtr<ID3D12Resource> ImGuiIndexBuffers[RenderContext::BUFFER_COUNT];
+	UINT CurrentBackBufferIndex = 0;
+
+	ComPtr<ID3D12PipelineState> GuiPSO;
+	{
+		TArray<D3D12_INPUT_ELEMENT_DESC> PSOLayout =
+		{
+			{"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(ImDrawVert, pos), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+			{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(ImDrawVert, uv), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+			{"COLOR", 	 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, offsetof(ImDrawVert, col), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+		};
+		TArray<StringView> EntryPoints = {"MainPS", "MainVS"};
+		DXGI_FORMAT RenderTargetFormat = RenderContext::BACK_BUFFER_FORMAT;
+		GuiPSO = Context.CreateShaderCombination(PSOLayout, EntryPoints, "content/shaders/GUI.hlsl", &RenderTargetFormat);
+
+		//PSODesc.RasterizerState = CD3DX12_RASTERIZER_DESC(
+			//D3D12_FILL_MODE_SOLID,
+			//D3D12_CULL_MODE_NONE,
+			//FALSE, 0, 0.f, 0.f, FALSE, FALSE, FALSE, FALSE,
+			//D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF
+		//);
+
+		//PSODesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+		//const D3D12_RENDER_TARGET_BLEND_DESC GuiBlendDesc =
+		//{
+			//TRUE, FALSE,
+			//D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_OP_ADD,
+			//D3D12_BLEND_ZERO, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+			//D3D12_LOGIC_OP_NOOP,
+			//D3D12_COLOR_WRITE_ENABLE_ALL,
+		//};
+		//PSODesc.BlendState.RenderTarget[0] = GuiBlendDesc;
+	}
+	Context.FlushUpload();
+
+	std::atomic<UINT64> LastCompletedFence = 0;
 	while (!glfwWindowShouldClose(Window.mHandle))
 	{
 		FrameMark;
@@ -655,9 +622,20 @@ int main(void)
 		Window.Update();
 		if (Window.mWindowStateDirty)
 		{
-			Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex], CurrentFenceValue, WaitEvent);
-			WindowStateDirtyFlushes++;
-			RenderContext.CreateBackBufferResources(Window);
+			// Wait for render thread AND gpu
+			TracyLockable(Mutex, WakeUpMainLock);
+			std::condition_variable_any WakeUpMain;
+			std::atomic_bool Done = false;
+			EnqueueRenderThreadWork([&FrameFence = FrameFences[CurrentBackBufferIndex], WaitEvent, &Done, &WakeUpMain](RenderContext& Context) {
+				Flush(Context.mGraphicsQueue, FrameFence, Context.mCurrentFenceValue, WaitEvent);
+				Done = true;
+				WakeUpMain.notify_one();
+			});
+			WakeUpMain.wait(WakeUpMainLock, [&Done]() { return Done.load(); });
+
+			EnqueueRenderThreadWork([&Window](RenderContext& Context) {
+				Context.CreateBackBufferResources(Window);
+			});
 			Window.mWindowStateDirty = false;
 		}
 
@@ -695,27 +673,26 @@ int main(void)
 		}
 		ImGui::End();
 
-		TextureData& BackBuffer = RenderContext.GetCurrentBackBuffer();
-		ComPtr<ID3D12CommandAllocator>& CommandAllocator = CommandAllocators[RenderContext.mCurrentBackBufferIndex];
-		ComPtr<ID3D12Fence>& Fence = FrameFences[RenderContext.mCurrentBackBufferIndex];
+		ComPtr<ID3D12CommandAllocator>& CommandAllocator = CommandAllocators[CurrentBackBufferIndex];
+		ComPtr<ID3D12Fence>& Fence = FrameFences[CurrentBackBufferIndex];
 
-		if (!WorkerInProgress && ReadbackInflight && ReadBackReadyFence < FrameFenceValues[RenderContext.mCurrentBackBufferIndex])
+		if (!WorkerInProgress && ReadbackInflight && ReadBackReadyFence < LastCompletedFence)
 		{
 			ZoneScopedN("Readback screen capture");
 
-			int x = RenderContext.mSceneColorSmall.Size.x;
-			int y = RenderContext.mSceneColorSmall.Size.y;
+			int x = mSceneColorSmall.Size.x;
+			int y = mSceneColorSmall.Size.y;
 
-			ComPtr<ID3D12Resource>& Resource = RenderContext.mSceneColorStagingBuffer;
+			ComPtr<ID3D12Resource>& Resource = mSceneColorStagingBuffer;
 
 			UINT   RowCount;
 			UINT64 RowPitch;
 			UINT64 ResourceSize;
 			D3D12_RESOURCE_DESC Desc = Resource->GetDesc();
-			RenderContext.mDevice->GetCopyableFootprints(&Desc, 0, 1, 0, NULL, &RowCount, &RowPitch, &ResourceSize);
+			Context.mDevice->GetCopyableFootprints(&Desc, 0, 1, 0, NULL, &RowCount, &RowPitch, &ResourceSize);
 
 			WorkerInProgress = true;
-			EnqueueWork(
+			EnqueueToWorker(
 				[
 					&ReadbackInflight,
 					&WorkerInProgress,
@@ -730,7 +707,7 @@ int main(void)
 					Range.End = (UINT64)ResourceSize;
 					void* Data;
 					ResourcePtr->Map(0, &Range, &Data);
-					FrameImage(Data, x, y, 3, false);
+					FrameImage(Data, (uint16_t)x, (uint16_t)y, 3, false);
 					ResourcePtr->Unmap(0, NULL);
 
 					WorkerInProgress = false;
@@ -741,59 +718,67 @@ int main(void)
 
 		{
 			ZoneScopedN("Wait for free backbuffer in swapchain");
-			while (!RenderContext.IsSwapChainReady())
+			do
 			{
 				// Do more useful work?
 				Window.Update();
 				Gui.Update(Window);
+			} while (!Context.IsSwapChainReady());
+		}
+
+
+		EnqueueRenderThreadWork(
+			[&LastCompletedFence, &CommandAllocator, &CommandList, &mSceneColor, &Fence, CurrentBackBufferIndex, &WaitEvent](RenderContext& Context) {
+				WaitForFenceValue(Fence, Context.FrameFenceValues[CurrentBackBufferIndex], WaitEvent);
+				LastCompletedFence = Context.FrameFenceValues[CurrentBackBufferIndex];
+
+				VALIDATE(CommandAllocator->Reset());
+				VALIDATE(CommandList->Reset(CommandAllocator.Get(), nullptr));
+
+				TracyD3D12NewFrame(Context.mGraphicsProfilingCtx);
+
+				{
+					TextureData& BackBuffer = Context.GetBackBuffer(CurrentBackBufferIndex);
+
+					CD3DX12_RESOURCE_BARRIER barriers[] = {
+						// backbuffer(present -> render)
+						CD3DX12_RESOURCE_BARRIER::Transition(
+							BackBuffer.Resource.Get(),
+							D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET,
+							D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES
+						),
+
+						// SceneColor(srv -> render)
+						CD3DX12_RESOURCE_BARRIER::Transition(
+							mSceneColor.Resource.Get(),
+							D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+							D3D12_RESOURCE_STATE_RENDER_TARGET
+						),
+					};
+					CommandList->ResourceBarrier(ArraySize(barriers), barriers);
+				}
+
+				{
+					IVector2 Size = mSceneColor.Size;
+					CD3DX12_VIEWPORT	SceneColorViewport = CD3DX12_VIEWPORT(0.f, 0.f, (float)Size.x, (float)Size.y);
+					CD3DX12_RECT		SceneColorScissor = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
+
+					CommandList->RSSetViewports(1, &SceneColorViewport );
+					CommandList->RSSetScissorRects(1, &SceneColorScissor);
+
+					// Clear scene color and depth textures
+					D3D12_CPU_DESCRIPTOR_HANDLE rtv = Context.GetRTVHandle(mSceneColor);
+					D3D12_CPU_DESCRIPTOR_HANDLE dsv = Context.GetDSVHandle();
+					CommandList->OMSetRenderTargets(1, &rtv, true, &dsv);
+					{
+						FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
+						CommandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
+					}
+
+					CommandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+				}
 			}
-		}
-
-		WaitForFenceValue(Fence, FrameFenceValues[RenderContext.mCurrentBackBufferIndex], WaitEvent);
-
-		VALIDATE(CommandAllocator->Reset());
-		VALIDATE(CommandList->Reset(CommandAllocator.Get(), nullptr));
-
-		TracyD3D12NewFrame(RenderContext.mGraphicsProfilingCtx);
-
-		{
-			CD3DX12_RESOURCE_BARRIER barriers[] = {
-				// backbuffer(present -> render)
-				CD3DX12_RESOURCE_BARRIER::Transition(
-					BackBuffer.Resource.Get(),
-					D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET,
-					D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES
-				),
-
-				// SceneColor(srv -> render)
-				CD3DX12_RESOURCE_BARRIER::Transition(
-					RenderContext.mSceneColor.Resource.Get(),
-					D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-					D3D12_RESOURCE_STATE_RENDER_TARGET
-				),
-			};
-			CommandList->ResourceBarrier(ArraySize(barriers), barriers);
-		}
-
-		{
-			IVector2 Size = RenderContext.mSceneColor.Size;
-			CD3DX12_VIEWPORT	SceneColorViewport = CD3DX12_VIEWPORT(0.f, 0.f, Size.x, Size.y);
-			CD3DX12_RECT		SceneColorScissor = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
-
-			CommandList->RSSetViewports(1, &SceneColorViewport );
-			CommandList->RSSetScissorRects(1, &SceneColorScissor);
-
-			// Clear scene color and depth textures
-			D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandle(RenderContext.mSceneColor);
-			D3D12_CPU_DESCRIPTOR_HANDLE dsv = RenderContext.GetDSVHandle();
-			CommandList->OMSetRenderTargets(1, &rtv, true, &dsv);
-			{
-				FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
-				CommandList->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-			}
-
-			CommandList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-		}
+		);
 
 		// Mesh
 		{
@@ -805,182 +790,331 @@ int main(void)
 			ImGui::DragFloat3("Eye", &MainCamera.Eye.x);
 			ImGui::DragFloat2("Target", &MainCamera.Angles.x, 0.05);
 
-			TracyD3D12Zone(RenderContext.mGraphicsProfilingCtx, CommandList.Get(), "Render Meshes");
-
-			ZoneScopedN("Drawing meshes");
-
-			RenderContext.BindDescriptors(CommandList, DefaultTexture);
-
-			float Fov = MainCamera.Fov;
-			float Near = MainCamera.Near;
-			float Far = MainCamera.Far;
-			Vector2& Angles = MainCamera.Angles;
-			Vector3& Eye = MainCamera.Eye;
-
-			CommandList->SetPipelineState(SimplePSO.Get());
-			CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-			Matrix Projection = Matrix::CreatePerspectiveFieldOfView(Math::Radians(Fov), Window.mSize.x / Window.mSize.y, Near, Far);
-			Matrix View = Matrix::CreateTranslation(-Eye) * Matrix::CreateRotationY(Angles.x) * Matrix::CreateRotationX(Angles.y);
-			for (auto& Mesh : Meshes)
-			{
-				Matrix Combined = Mesh.Transform;
-
-				Combined *= View;
-				Combined *= Projection;
-				CommandList->SetGraphicsRoot32BitConstants(1, 16, &Combined, 0);
-				for (UINT ID : Mesh.MeshIDs)
+			EnqueueRenderThreadWork(
+				[MainCamera, &CommandList, &DefaultTexture, &SimplePSO, &Window, &Meshes, &MeshDatas](RenderContext&Context)
 				{
-					MeshData& MeshData = MeshDatas[ID];
+					TracyD3D12Zone(Context.mGraphicsProfilingCtx, CommandList.Get(), "Render Meshes");
+					ZoneScopedN("Drawing meshes");
 
-					CommandList->IASetVertexBuffers(0, 1, &MeshData.VertexBufferView);
-					CommandList->IASetIndexBuffer(&MeshData.IndexBufferView);
+					Context.BindDescriptors(CommandList, DefaultTexture);
 
-					CommandList->DrawIndexedInstanced(MeshData.IndexBufferView.SizeInBytes / 4, 1, 0, 0, 0);
+					float Fov = MainCamera.Fov;
+					float Near = MainCamera.Near;
+					float Far = MainCamera.Far;
+					Vector2 Angles = MainCamera.Angles;
+					Vector3 Eye = MainCamera.Eye;
+
+					CommandList->SetPipelineState(SimplePSO.Get());
+					CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+					Matrix Projection = Matrix::CreatePerspectiveFieldOfView(Math::Radians(Fov), (float)Window.mSize.x / (float)Window.mSize.y, Near, Far);
+					Matrix View = Matrix::CreateTranslation(-Eye) * Matrix::CreateRotationY(Angles.x) * Matrix::CreateRotationX(Angles.y);
+
+					for (auto& Mesh : Meshes)
+					{
+						Matrix Combined = Mesh.Transform;
+
+						Combined *= View;
+						Combined *= Projection;
+						CommandList->SetGraphicsRoot32BitConstants(1, 16, &Combined, 0);
+						for (UINT ID : Mesh.MeshIDs)
+						{
+							MeshData& MeshData = MeshDatas[ID];
+
+							D3D12_VERTEX_BUFFER_VIEW VertexBufferView;
+							VertexBufferView.BufferLocation = MeshData.VertexBuffer->GetGPUVirtualAddress();
+							VertexBufferView.SizeInBytes = MeshData.VertexBufferSize;
+							VertexBufferView.StrideInBytes = MeshData.VertexSize;
+							CommandList->IASetVertexBuffers(0, 1, &VertexBufferView);
+
+							D3D12_INDEX_BUFFER_VIEW IndexBufferView;
+							IndexBufferView.BufferLocation = MeshData.IndexBuffer->GetGPUVirtualAddress();
+							IndexBufferView.SizeInBytes = MeshData.IndexBufferSize;
+							IndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+							CommandList->IASetIndexBuffer(&IndexBufferView);
+
+							CommandList->DrawIndexedInstanced(MeshData.IndexBufferSize / 4, 1, 0, 0, 0);
+						}
+					}
+				}
+			);
+		}
+
+		EnqueueRenderThreadWork(
+			[&CommandList, &mSceneColor, &BlitPSO, &Quad,QuadVertexBufferView, QuadIndexBufferView, &Window, CurrentBackBufferIndex](RenderContext& Context) {
+				// SceneColor(render -> srv)
+				{
+					CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+						mSceneColor.Resource.Get(),
+						D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+					CommandList->ResourceBarrier(1, &barrier);
+				}
+				{
+					TracyD3D12Zone(Context.mGraphicsProfilingCtx, CommandList.Get(), "Blit scenecolor to backbuffer");
+
+					Math::Matrix Identity;
+
+					Context.BindDescriptors(CommandList, mSceneColor);
+
+					CommandList->SetPipelineState(BlitPSO.Get());
+					CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+					CommandList->SetGraphicsRoot32BitConstants(1, 16, &Identity, 0);
+
+					CommandList->IASetVertexBuffers(0, 1, &QuadVertexBufferView);
+					CommandList->IASetIndexBuffer(&QuadIndexBufferView);
+
+					TextureData& BackBuffer = Context.GetBackBuffer(CurrentBackBufferIndex);
+					D3D12_CPU_DESCRIPTOR_HANDLE rtv = Context.GetRTVHandle(BackBuffer);
+					CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
+
+					CD3DX12_VIEWPORT	Viewport = CD3DX12_VIEWPORT(0.f, 0.f, (float)Window.mSize.x, (float)Window.mSize.y);
+					CD3DX12_RECT		ScissorRect = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
+					CommandList->RSSetViewports(1, &Viewport);
+					CommandList->RSSetScissorRects(1, &ScissorRect);
+
+					CommandList->DrawIndexedInstanced(3, 1, 0, 0, 0);
 				}
 			}
-		}
+		);
 
-		// SceneColor(render -> srv)
+		ImGui::EndFrame();
+		ImGui::Render();
+
+		ComPtr<ID3D12Resource>& ImGuiVertexBuffer = ImGuiVertexBuffers[CurrentBackBufferIndex];
+		ComPtr<ID3D12Resource>& ImGuiIndexBuffer = ImGuiIndexBuffers[CurrentBackBufferIndex];
+		UINT64& WatermarkVertex = ImVertexHighwatermarks[CurrentBackBufferIndex];
+		UINT64& WatermarkIndex = ImIndexHighwatermarks[CurrentBackBufferIndex];
+
+		ImDrawData *DrawData = ImGui::GetDrawData();
+
+		if (DrawData && DrawData->TotalVtxCount != 0)
 		{
-			CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-				RenderContext.mSceneColor.Resource.Get(),
-				D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+			UINT64 VertexBufferSize = DrawData->TotalVtxCount * sizeof(ImDrawVert);
+			if (VertexBufferSize > WatermarkVertex)
+			{
+				ImGuiVertexBuffer = Context.CreateBuffer(VertexBufferSize, true);
+				WatermarkVertex = VertexBufferSize;
+			}
 
-			CommandList->ResourceBarrier(1, &barrier);
+			UINT64 IndexBufferSize = DrawData->TotalIdxCount * sizeof(ImDrawIdx);
+			if (IndexBufferSize > WatermarkIndex)
+			{
+				ImGuiIndexBuffer = Context.CreateBuffer(IndexBufferSize, true);
+				WatermarkIndex = IndexBufferSize;
+			}
+
+			UINT64 VtxOffset = 0;
+			UINT64 IdxOffset = 0;
+
+			unsigned char* VtxP = NULL;
+			unsigned char* IdxP = NULL;
+			ImGuiVertexBuffer->Map(0, nullptr, (void**)&VtxP);
+			ImGuiIndexBuffer->Map(0, nullptr, (void**)&IdxP);
+			for (int i = 0; i < DrawData->CmdListsCount; ++i)
+			{
+				ImDrawList* ImGuiCmdList = DrawData->CmdLists[i];
+
+				memcpy(VtxP + VtxOffset, ImGuiCmdList->VtxBuffer.Data, ImGuiCmdList->VtxBuffer.Size * sizeof(ImDrawVert));
+				VtxOffset += ImGuiCmdList->VtxBuffer.Size * sizeof(ImDrawVert);
+				memcpy(IdxP + IdxOffset, ImGuiCmdList->IdxBuffer.Data, ImGuiCmdList->IdxBuffer.Size * sizeof(ImDrawIdx));
+				IdxOffset += ImGuiCmdList->IdxBuffer.Size * sizeof(ImDrawIdx);
+			}
+			ImGuiVertexBuffer->Unmap(0, nullptr);
+			ImGuiIndexBuffer->Unmap(0, nullptr);
+
+			CHECK(VtxOffset == VertexBufferSize && IdxOffset == IndexBufferSize, "Make sure that we upload everything.");
+
+			TArray<ImDrawList*> DrawLists;
+			for (int i = 0; i < DrawData->CmdListsCount; ++i)
+			{
+				ImDrawList* ImGuiCmdList = DrawData->CmdLists[i];
+				DrawLists.push_back(ImGuiCmdList->CloneOutput());
+			}
+
+			EnqueueRenderThreadWork(
+				[
+					DL = MOVE(DrawLists),
+					&CommandList,
+					&GuiPSO,
+					&Font = Gui.FontTexData,
+					&ImGuiIndexBuffer,
+					&ImGuiVertexBuffer,
+					IndexBufferSize,
+					VertexBufferSize,
+					CurrentBackBufferIndex
+				](RenderContext& Context) {
+				TracyD3D12Zone(Context.mGraphicsProfilingCtx, CommandList.Get(), "Render GUI");
+
+				Context.BindDescriptors(CommandList, Font);
+
+				TextureData& RenderTarget = Context.GetBackBuffer(CurrentBackBufferIndex);
+				D3D12_CPU_DESCRIPTOR_HANDLE rtv = Context.GetRTVHandle(RenderTarget);
+				CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
+				CommandList->SetPipelineState(GuiPSO.Get());
+				CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+				Math::Vector2 RenderTargetSize((float)RenderTarget.Size.x, (float)RenderTarget.Size.y);
+				CommandList->SetGraphicsRoot32BitConstants(1, 2, &RenderTargetSize, 0);
+
+				D3D12_INDEX_BUFFER_VIEW ImGuiIndexBufferView;
+				ImGuiIndexBufferView.BufferLocation = ImGuiIndexBuffer->GetGPUVirtualAddress();
+				ImGuiIndexBufferView.SizeInBytes = UINT(IndexBufferSize);
+				ImGuiIndexBufferView.Format = DXGI_FORMAT_R16_UINT;
+				CommandList->IASetIndexBuffer(&ImGuiIndexBufferView);
+
+				UINT64 VertexOffset = 0;
+				UINT  IndexOffset = 0;
+				for (int i = 0; i < DL.size(); ++i)
+				{
+					ImDrawList* ImGuiCmdList = DL[i];
+
+					D3D12_VERTEX_BUFFER_VIEW ImGuiVertexBufferView;
+					ImGuiVertexBufferView.BufferLocation = ImGuiVertexBuffer->GetGPUVirtualAddress() + VertexOffset;
+					ImGuiVertexBufferView.SizeInBytes = ImGuiCmdList->VtxBuffer.Size * sizeof(ImDrawVert);
+					ImGuiVertexBufferView.StrideInBytes = sizeof(ImDrawVert);
+
+					CommandList->IASetVertexBuffers(0, 1, &ImGuiVertexBufferView);
+					for (auto& ImGuiCmd : ImGuiCmdList->CmdBuffer)
+					{
+						D3D12_RECT Rect{
+							LONG(ImGuiCmd.ClipRect.x),
+							LONG(ImGuiCmd.ClipRect.y),
+							LONG(ImGuiCmd.ClipRect.z),
+							LONG(ImGuiCmd.ClipRect.w),
+						};
+						CommandList->RSSetScissorRects(1, &Rect);
+
+						CommandList->DrawIndexedInstanced(ImGuiCmd.ElemCount, 1, IndexOffset, 0, 0);
+						IndexOffset += ImGuiCmd.ElemCount;
+					}
+					VertexOffset += ImGuiVertexBufferView.SizeInBytes;
+				}
+				for (ImDrawList*List : DL)
+				{
+					IM_DELETE(List);
+				}
+			});
 		}
-
-		{
-			TracyD3D12Zone(RenderContext.mGraphicsProfilingCtx, CommandList.Get(), "Blit scenecolor to backbuffer");
-
-			Math::Matrix Identity;
-
-			RenderContext.BindDescriptors(CommandList, RenderContext.mSceneColor);
-
-			CommandList->SetPipelineState(BlitPSO.Get());
-			CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-			CommandList->SetGraphicsRoot32BitConstants(1, 16, &Identity, 0);
-
-			CommandList->IASetVertexBuffers(0, 1, &Quad.VertexBufferView);
-			CommandList->IASetIndexBuffer(&Quad.IndexBufferView);
-
-			D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandle(BackBuffer);
-			CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
-
-			CD3DX12_VIEWPORT	Viewport = CD3DX12_VIEWPORT(0.f, 0.f, Window.mSize.x, Window.mSize.y);
-			CD3DX12_RECT		ScissorRect = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
-			CommandList->RSSetViewports(1, &Viewport);
-			CommandList->RSSetScissorRects(1, &ScissorRect);
-
-			CommandList->DrawIndexedInstanced(3, 1, 0, 0, 0);
-		}
-
-		RenderContext.RenderGUI(CommandList, Window, Gui.FontTexData, RenderContext.GetCurrentBackBuffer());
 
 #if TRACY_ENABLE || CAPTURE_SCREEN // Send screenshot to Tracy
 		if (TracyIsConnected && !ReadbackInflight && !WorkerInProgress)
 		{
-			TracyD3D12Zone(RenderContext.mGraphicsProfilingCtx, CommandList.Get(), "Downsample scenecolor to readback");
+			EnqueueRenderThreadWork([&CommandList, &mSceneColorSmall, &DownsampleRasterPSO, &mSceneColorStagingBuffer](RenderContext& Context) {
+				TracyD3D12Zone(Context.mGraphicsProfilingCtx, CommandList.Get(), "Downsample scenecolor to readback");
 
-			TextureData& Small = RenderContext.mSceneColorSmall;
-			IVector2 Size = Small.Size;
+				TextureData& Small = mSceneColorSmall;
+				IVector2 Size = Small.Size;
 
-			// readback(copy -> render)
-			{
-				CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-					Small.Resource.Get(),
-					D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-				CommandList->ResourceBarrier(1, &barrier);
-			}
+				// readback(copy -> render)
+				{
+					CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+						Small.Resource.Get(),
+						D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+					CommandList->ResourceBarrier(1, &barrier);
+				}
 
-			{
-				CD3DX12_VIEWPORT	SmallViewport = CD3DX12_VIEWPORT(0.f, 0.f, Size.x, Size.y);
-				CD3DX12_RECT		SmallScissor = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
+				{
+					CD3DX12_VIEWPORT	SmallViewport = CD3DX12_VIEWPORT(0.f, 0.f, (float)Size.x, (float)Size.y);
+					CD3DX12_RECT		SmallScissor = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
 
-				D3D12_CPU_DESCRIPTOR_HANDLE rtv = RenderContext.GetRTVHandle(Small);
-				CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
+					D3D12_CPU_DESCRIPTOR_HANDLE rtv = Context.GetRTVHandle(Small);
+					CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
 
-				CommandList->SetPipelineState(DownsampleRasterPSO.Get());
-				CommandList->RSSetViewports(1, &SmallViewport);
-				CommandList->RSSetScissorRects(1, &SmallScissor);
+					CommandList->SetPipelineState(DownsampleRasterPSO.Get());
+					CommandList->RSSetViewports(1, &SmallViewport);
+					CommandList->RSSetScissorRects(1, &SmallScissor);
 
-				CommandList->DrawIndexedInstanced(3, 1, 0, 0, 0);
-			}
+					CommandList->DrawIndexedInstanced(3, 1, 0, 0, 0);
+				}
 
-			// readback(render -> copy)
-			{
-				CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-					Small.Resource.Get(),
-					D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-				CommandList->ResourceBarrier(1, &barrier);
-			}
+				// readback(render -> copy)
+				{
+					CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+						Small.Resource.Get(),
+						D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+					CommandList->ResourceBarrier(1, &barrier);
+				}
 
-			{
-				D3D12_RESOURCE_DESC Desc = Small.Resource->GetDesc();
-				UINT RowCount;
-				UINT64 RowPitch;
-				UINT64 ResourceSize;
-				RenderContext.mDevice->GetCopyableFootprints(&Desc, 0, 1, 0, NULL, &RowCount, &RowPitch, &ResourceSize);
+				{
+					D3D12_RESOURCE_DESC Desc = Small.Resource->GetDesc();
+					UINT RowCount;
+					UINT64 RowPitch;
+					UINT64 ResourceSize;
+					Context.mDevice->GetCopyableFootprints(&Desc, 0, 1, 0, NULL, &RowCount, &RowPitch, &ResourceSize);
 
-				D3D12_PLACED_SUBRESOURCE_FOOTPRINT bufferFootprint = {};
-				bufferFootprint.Footprint.Width = Small.Size.x;
-				bufferFootprint.Footprint.Height = Small.Size.y;
-				bufferFootprint.Footprint.Depth = 1;
-				bufferFootprint.Footprint.RowPitch = RowPitch;
-				bufferFootprint.Footprint.Format = Small.Format;
+					D3D12_PLACED_SUBRESOURCE_FOOTPRINT bufferFootprint = {};
+					bufferFootprint.Footprint.Width = Small.Size.x;
+					bufferFootprint.Footprint.Height = Small.Size.y;
+					bufferFootprint.Footprint.Depth = 1;
+					bufferFootprint.Footprint.RowPitch = (UINT)RowPitch;
+					bufferFootprint.Footprint.Format = Small.Format;
 
-				CD3DX12_TEXTURE_COPY_LOCATION Dst(RenderContext.mSceneColorStagingBuffer.Get(), bufferFootprint);
-				CD3DX12_TEXTURE_COPY_LOCATION Src(Small.Resource.Get());
-				CommandList->CopyTextureRegion(&Dst,0,0,0,&Src,nullptr);
-			}
+					CD3DX12_TEXTURE_COPY_LOCATION Dst(mSceneColorStagingBuffer.Get(), bufferFootprint);
+					CD3DX12_TEXTURE_COPY_LOCATION Src(Small.Resource.Get());
+					CommandList->CopyTextureRegion(&Dst,0,0,0,&Src,nullptr);
+				}
+			});
 		}
 #endif
 
 		// backbuffer(render -> present)
-		{
-			CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-				BackBuffer.Resource.Get(),
-				D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-			CommandList->ResourceBarrier(1, &barrier);
-		}
+		EnqueueRenderThreadWork([&CommandList, CurrentBackBufferIndex](RenderContext& Context) {
+			{
+				CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+					Context.GetBackBuffer(CurrentBackBufferIndex).Resource.Get(),
+					D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+				CommandList->ResourceBarrier(1, &barrier);
+			}
+		});
 
-		{
+		EnqueueRenderThreadWork([&CommandList, CurrentBackBufferIndex, &Fence](RenderContext& Context) {
 			ZoneScopedN("Submit main command list");
 
 			VALIDATE(CommandList->Close());
-			FrameFenceValues[RenderContext.mCurrentBackBufferIndex] = RenderContext.ExecuteGraphics(CommandList.Get(), Fence, CurrentFenceValue);
-		}
+			Context.FrameFenceValues[CurrentBackBufferIndex] = Context.ExecuteGraphics(CommandList.Get(), Fence, Context.mCurrentFenceValue);
+
+			{
+				ZoneScopedN("Present");
+				Context.Present();
+			}
+		});
 
 #if TRACY_ENABLE || CAPTURE_SCREEN
-		if (TracyIsConnected && !ReadbackInflight && !WorkerInProgress)
-		{
-			ReadBackReadyFence = FrameFenceValues[RenderContext.mCurrentBackBufferIndex];
-			ReadbackInflight = true;
-		}
+		EnqueueRenderThreadWork([&ReadBackReadyFence, &ReadbackInflight, &WorkerInProgress, CurrentBackBufferIndex](RenderContext& Context) {
+			if (TracyIsConnected && !ReadbackInflight && !WorkerInProgress)
+			{
+				ReadBackReadyFence = Context.FrameFenceValues[CurrentBackBufferIndex];
+				ReadbackInflight = true;
+			}
+		});
 #endif
 
-		{
-			ZoneScopedN("Present");
-			RenderContext.Present();
-		}
-		RenderContext.mCurrentBackBufferIndex = (RenderContext.mCurrentBackBufferIndex + 1) % Render::Context::BUFFER_COUNT;
+		CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % RenderContext::BUFFER_COUNT;
 	}
 
 	Importer.SetProgressHandler(nullptr);
 	Helper.ShouldProceed = false;
 
-	if (RenderContext.mCurrentBackBufferIndex == 0)
+	if (CurrentBackBufferIndex == 0)
 	{
-		RenderContext.mCurrentBackBufferIndex = Render::Context::BUFFER_COUNT;
+		CurrentBackBufferIndex = RenderContext::BUFFER_COUNT;
 	}
-	Flush(RenderContext.mGraphicsQueue, FrameFences[RenderContext.mCurrentBackBufferIndex - 1], CurrentFenceValue, WaitEvent);
-	RenderContext.WaitForUploadFinish();
+
+	// Wait for render thread AND gpu
+	TracyLockable(Mutex, WakeUpMainLock);
+	std::condition_variable_any WakeUpMain;
+	std::atomic_bool Done = false;
+	EnqueueRenderThreadWork([&FrameFences,CurrentBackBufferIndex, WaitEvent, &Done, &WakeUpMain](RenderContext& Context) {
+		Flush(Context.mGraphicsQueue, FrameFences[CurrentBackBufferIndex - 1], Context.mCurrentFenceValue, WaitEvent);
+		Context.WaitForUploadFinish();
+		Done = true;
+		WakeUpMain.notify_one();
+	});
+	WakeUpMain.wait(WakeUpMainLock, [&Done]() { return Done.load(); });
+
 	CloseHandle(WaitEvent);
 
-	WorkersShouldStop = true;
-	WakeUpWorker.notify_all();
-
-	for (auto& Worker : Workers)
-		if (Worker.joinable())
-			Worker.join();
+	StopRenderThread();
+	StopWorkerThreads();
 }
 

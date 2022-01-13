@@ -35,16 +35,16 @@ void Flush(ComPtr<ID3D12CommandQueue>& CommandQueue, ComPtr<ID3D12Fence>& Fence,
 	WaitForFenceValue(Fence, fenceValueForSignal, FenceEvent);
 }
 
-StringView LoadWholeFile(const char *Path)
+StringView LoadWholeFile(StringView Path)
 {
 	ZoneScoped;
-	auto CachedValue = FileCache.find(Path);
+	auto CachedValue = FileCache.find(Path.data());
 	if (CachedValue != FileCache.end())
 	{
 		return CachedValue->second;
 	}
 
-	std::ifstream infile(Path);
+	std::ifstream infile(Path.data());
 	infile.seekg(0, std::ios::end);
 	size_t file_size_in_byte = infile.tellg();
 	String data;
@@ -52,7 +52,7 @@ StringView LoadWholeFile(const char *Path)
 	infile.seekg(0, std::ios::beg);
 	infile.read(&data[0], file_size_in_byte);
 
-	return FileCache[Path] = MOVE(data);
+	return FileCache[Path.data()] = MOVE(data);
 }
 
 // for eastl

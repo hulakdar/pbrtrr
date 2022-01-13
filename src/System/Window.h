@@ -17,6 +17,7 @@ namespace System
 
 namespace Callbacks
 {
+	void Error(int error,const char* description);
 	void WindowSize(GLFWwindow* window, int width, int height);
 	void Scroll(GLFWwindow* window, double xoffset, double yoffset);
 	void Key(GLFWwindow* window, int key, int scancode, int action, int mods);
@@ -36,12 +37,14 @@ public:
 		VALIDATE_GLFW_CALL(glfwInit());
 
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
+		
 		VALIDATE_GLFW_CALL(mHandle = glfwCreateWindow(mSize.x, mSize.y, "pbrtrr", nullptr, nullptr));
 		CHECK(mHandle != nullptr, "GLFW failed to create a window.");
 
 		VALIDATE_GLFW_CALL(mHwnd = glfwGetWin32Window(mHandle));
 		CHECK(mHwnd != nullptr, "Couldn't get HWND from GLFW window.");
+
+		glfwSetErrorCallback(&Callbacks::Error);
 
 		glfwSetWindowUserPointer(mHandle, this);
 		glfwSetWindowSizeCallback(mHandle, &Callbacks::WindowSize);
@@ -96,7 +99,7 @@ private:
 		ZoneScoped;
 		double MouseX, MouseY;
 		glfwGetCursorPos(mHandle, &MouseX, &MouseY);
-		mMousePosition = Vector2(MouseX, MouseY);
+		mMousePosition = Vector2((float)MouseX, (float)MouseY);
 	}
 };
 
