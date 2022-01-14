@@ -412,7 +412,6 @@ int main(void)
 	}
 
 	ComPtr<ID3D12PipelineState> BlitPSO;
-
 	{
 		D3D12_INPUT_ELEMENT_DESC InputDesc = {};
 		InputDesc.SemanticName = "POSITION";
@@ -458,8 +457,6 @@ int main(void)
 	}
 
 	MeshData Quad;
-	D3D12_INDEX_BUFFER_VIEW QuadIndexBufferView;
-	D3D12_VERTEX_BUFFER_VIEW QuadVertexBufferView;
 	{
 		uint16_t IndexData[] = {
 			0, 1, 2,
@@ -477,7 +474,7 @@ int main(void)
 		Quad.IndexBufferSize = sizeof(IndexData);
 		SetD3DName(Quad.IndexBuffer, L"Quad IndexBuffer");
 
-		QuadIndexBufferView = Context.CreateIndexBufferView(
+		Context.CreateIndexBufferView(
 			Quad.IndexBuffer,
 			IndexData,
 			sizeof(IndexData),
@@ -491,7 +488,7 @@ int main(void)
 
 		Quad.VertexSize = sizeof(Math::Vector2);
 		SetD3DName(Quad.VertexBuffer, L"Quad VertexBuffer");
-		QuadVertexBufferView = Context.CreateVertexBufferView(
+		Context.CreateVertexBufferView(
 			Quad.VertexBuffer,
 			VertexData,
 			sizeof(VertexData),
@@ -499,7 +496,6 @@ int main(void)
 		);
 	}
 
-	//Context.InitGUIResources();
 	Context.FlushUpload();
 
 	HANDLE WaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -524,7 +520,7 @@ int main(void)
 	TextureData mSceneColor = {};
 	{
 		mSceneColor.Format = RenderContext::SCENE_COLOR_FORMAT;
-		mSceneColor.Size = IVector2(Window.mSize.x / 2, Window.mSize.y / 2);
+		mSceneColor.Size = IVector2(Window.mSize.x, Window.mSize.y);
 
 		D3D12_CLEAR_VALUE ClearValue = {};
 		FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
@@ -532,7 +528,7 @@ int main(void)
 		ClearValue.Format = RenderContext::SCENE_COLOR_FORMAT;
 
 		Context.CreateTexture(mSceneColor,
-			D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+			D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
 			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 			&ClearValue
 		);
@@ -544,10 +540,10 @@ int main(void)
 	{
 		D3D12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
 			DXGI_FORMAT_D24_UNORM_S8_UINT,
-			Window.mSize.x / 2, Window.mSize.y / 2,
+			Window.mSize.x, Window.mSize.y,
 			1, 1, // ArraySize, MipLevels
 			1, 0, // SampleCount, SampleQuality
-			D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL	
+			D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
 		);
 		D3D12_CLEAR_VALUE ClearValue = {};
 		ClearValue.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
@@ -569,9 +565,7 @@ int main(void)
 			D3D12_RESOURCE_STATE_COPY_SOURCE,
 			nullptr
 		);
-		{
-			Context.CreateRTV(mSceneColorSmall);
-		}
+		Context.CreateRTV(mSceneColorSmall);
 	}
 
 	ComPtr<ID3D12Resource>	mSceneColorStagingBuffer = Context.CreateBuffer(mSceneColorSmall.Size.x * mSceneColorSmall.Size.y * 4, false, true);
@@ -622,6 +616,8 @@ int main(void)
 		Window.Update();
 		if (Window.mWindowStateDirty)
 		{
+			ZoneScopedN("Window state dirty");
+
 			// Wait for render thread AND gpu
 			TracyLockable(Mutex, WakeUpMainLock);
 			std::condition_variable_any WakeUpMain;
@@ -637,6 +633,7 @@ int main(void)
 				Context.CreateBackBufferResources(Window);
 			});
 			Window.mWindowStateDirty = false;
+			CurrentBackBufferIndex = 0;
 		}
 
 		Gui.Update(Window);
@@ -672,9 +669,6 @@ int main(void)
 			ImGui::ProgressBar(Helper.Progress);
 		}
 		ImGui::End();
-
-		ComPtr<ID3D12CommandAllocator>& CommandAllocator = CommandAllocators[CurrentBackBufferIndex];
-		ComPtr<ID3D12Fence>& Fence = FrameFences[CurrentBackBufferIndex];
 
 		if (!WorkerInProgress && ReadbackInflight && ReadBackReadyFence < LastCompletedFence)
 		{
@@ -723,15 +717,22 @@ int main(void)
 				// Do more useful work?
 				Window.Update();
 				Gui.Update(Window);
+				Context.FlushUpload();
 			} while (!Context.IsSwapChainReady());
 		}
 
-
 		EnqueueRenderThreadWork(
-			[&LastCompletedFence, &CommandAllocator, &CommandList, &mSceneColor, &Fence, CurrentBackBufferIndex, &WaitEvent](RenderContext& Context) {
-				WaitForFenceValue(Fence, Context.FrameFenceValues[CurrentBackBufferIndex], WaitEvent);
+			[&LastCompletedFence, &CommandAllocators, CommandList, &mSceneColor, &FrameFences, CurrentBackBufferIndex, &WaitEvent](RenderContext& Context) {
+
+				{
+					ZoneScopedN("Wait for fence");
+					WaitForFenceValue(FrameFences[CurrentBackBufferIndex], Context.FrameFenceValues[CurrentBackBufferIndex], WaitEvent);
+				}
 				LastCompletedFence = Context.FrameFenceValues[CurrentBackBufferIndex];
 
+				ZoneScopedN("Reset all and get ready for the frame");
+
+				ComPtr<ID3D12CommandAllocator>& CommandAllocator = CommandAllocators[CurrentBackBufferIndex];
 				VALIDATE(CommandAllocator->Reset());
 				VALIDATE(CommandList->Reset(CommandAllocator.Get(), nullptr));
 
@@ -840,7 +841,15 @@ int main(void)
 		}
 
 		EnqueueRenderThreadWork(
-			[&CommandList, &mSceneColor, &BlitPSO, &Quad,QuadVertexBufferView, QuadIndexBufferView, &Window, CurrentBackBufferIndex](RenderContext& Context) {
+			[
+				&CommandList,
+				&mSceneColor,
+				&BlitPSO,
+				&Quad,
+				&Window,
+				CurrentBackBufferIndex
+			]
+			(RenderContext& Context) {
 				// SceneColor(render -> srv)
 				{
 					CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -860,8 +869,17 @@ int main(void)
 					CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 					CommandList->SetGraphicsRoot32BitConstants(1, 16, &Identity, 0);
 
-					CommandList->IASetVertexBuffers(0, 1, &QuadVertexBufferView);
-					CommandList->IASetIndexBuffer(&QuadIndexBufferView);
+					D3D12_VERTEX_BUFFER_VIEW VertexBufferView;
+					VertexBufferView.BufferLocation = Quad.VertexBuffer->GetGPUVirtualAddress();
+					VertexBufferView.SizeInBytes = Quad.VertexBufferSize;
+					VertexBufferView.StrideInBytes = Quad.VertexSize;
+					CommandList->IASetVertexBuffers(0, 1, &VertexBufferView);
+
+					D3D12_INDEX_BUFFER_VIEW IndexBufferView;
+					IndexBufferView.BufferLocation = Quad.IndexBuffer->GetGPUVirtualAddress();
+					IndexBufferView.SizeInBytes = Quad.IndexBufferSize;
+					IndexBufferView.Format = DXGI_FORMAT_R16_UINT;
+					CommandList->IASetIndexBuffer(&IndexBufferView);
 
 					TextureData& BackBuffer = Context.GetBackBuffer(CurrentBackBufferIndex);
 					D3D12_CPU_DESCRIPTOR_HANDLE rtv = Context.GetRTVHandle(BackBuffer);
@@ -999,7 +1017,21 @@ int main(void)
 #if TRACY_ENABLE || CAPTURE_SCREEN // Send screenshot to Tracy
 		if (TracyIsConnected && !ReadbackInflight && !WorkerInProgress)
 		{
-			EnqueueRenderThreadWork([&CommandList, &mSceneColorSmall, &DownsampleRasterPSO, &mSceneColorStagingBuffer](RenderContext& Context) {
+			ReadbackInflight = true;
+
+			EnqueueRenderThreadWork(
+				[
+					&CommandList,
+					&mSceneColorSmall,
+					&mSceneColor,
+					&Quad,
+					&DownsampleRasterPSO,
+					&mSceneColorStagingBuffer,
+					&ReadBackReadyFence,
+					&ReadbackInflight,
+					CurrentBackBufferIndex
+				]
+			(RenderContext& Context) {
 				TracyD3D12Zone(Context.mGraphicsProfilingCtx, CommandList.Get(), "Downsample scenecolor to readback");
 
 				TextureData& Small = mSceneColorSmall;
@@ -1019,6 +1051,20 @@ int main(void)
 
 					D3D12_CPU_DESCRIPTOR_HANDLE rtv = Context.GetRTVHandle(Small);
 					CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
+
+					Context.BindDescriptors(CommandList, mSceneColor);
+
+					D3D12_VERTEX_BUFFER_VIEW VertexBufferView;
+					VertexBufferView.BufferLocation = Quad.VertexBuffer->GetGPUVirtualAddress();
+					VertexBufferView.SizeInBytes = Quad.VertexBufferSize;
+					VertexBufferView.StrideInBytes = Quad.VertexSize;
+					CommandList->IASetVertexBuffers(0, 1, &VertexBufferView);
+
+					D3D12_INDEX_BUFFER_VIEW IndexBufferView;
+					IndexBufferView.BufferLocation = Quad.IndexBuffer->GetGPUVirtualAddress();
+					IndexBufferView.SizeInBytes = Quad.IndexBufferSize;
+					IndexBufferView.Format = DXGI_FORMAT_R16_UINT;
+					CommandList->IASetIndexBuffer(&IndexBufferView);
 
 					CommandList->SetPipelineState(DownsampleRasterPSO.Get());
 					CommandList->RSSetViewports(1, &SmallViewport);
@@ -1052,6 +1098,8 @@ int main(void)
 					CD3DX12_TEXTURE_COPY_LOCATION Dst(mSceneColorStagingBuffer.Get(), bufferFootprint);
 					CD3DX12_TEXTURE_COPY_LOCATION Src(Small.Resource.Get());
 					CommandList->CopyTextureRegion(&Dst,0,0,0,&Src,nullptr);
+
+					ReadBackReadyFence = Context.mCurrentFenceValue + 1;
 				}
 			});
 		}
@@ -1067,27 +1115,17 @@ int main(void)
 			}
 		});
 
-		EnqueueRenderThreadWork([&CommandList, CurrentBackBufferIndex, &Fence](RenderContext& Context) {
+		EnqueueRenderThreadWork([&CommandList, &FrameFences, CurrentBackBufferIndex](RenderContext& Context) {
 			ZoneScopedN("Submit main command list");
 
 			VALIDATE(CommandList->Close());
-			Context.FrameFenceValues[CurrentBackBufferIndex] = Context.ExecuteGraphics(CommandList.Get(), Fence, Context.mCurrentFenceValue);
-
-			{
-				ZoneScopedN("Present");
-				Context.Present();
-			}
+			Context.FrameFenceValues[CurrentBackBufferIndex] = Context.ExecuteGraphics(
+				CommandList.Get(),
+				FrameFences[CurrentBackBufferIndex],
+				Context.mCurrentFenceValue
+			);
+			Context.Present();
 		});
-
-#if TRACY_ENABLE || CAPTURE_SCREEN
-		EnqueueRenderThreadWork([&ReadBackReadyFence, &ReadbackInflight, &WorkerInProgress, CurrentBackBufferIndex](RenderContext& Context) {
-			if (TracyIsConnected && !ReadbackInflight && !WorkerInProgress)
-			{
-				ReadBackReadyFence = Context.FrameFenceValues[CurrentBackBufferIndex];
-				ReadbackInflight = true;
-			}
-		});
-#endif
 
 		CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % RenderContext::BUFFER_COUNT;
 	}
@@ -1111,10 +1149,8 @@ int main(void)
 		WakeUpMain.notify_one();
 	});
 	WakeUpMain.wait(WakeUpMainLock, [&Done]() { return Done.load(); });
-
-	CloseHandle(WaitEvent);
-
 	StopRenderThread();
 	StopWorkerThreads();
+	CloseHandle(WaitEvent);
 }
 

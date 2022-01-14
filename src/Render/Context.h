@@ -46,8 +46,6 @@ public:
 
 	bool IsSwapChainReady();
 
-	void InitGUIResources();
-
 	void Deinit()
 	{
 		TracyD3D12Destroy(mGraphicsProfilingCtx);
@@ -259,7 +257,6 @@ public:
 		ZoneScoped;
 		ComPtr<ID3D12RootSignature> Result;
 		{
-			ScopedLock Lock(mDeviceMutex);
 			VALIDATE(
 				mDevice->CreateRootSignature(
 					0,
@@ -282,10 +279,7 @@ public:
 		Desc.Type = Type;
 		Desc.Flags = Flags;
 	 
-		{
-			ScopedLock Lock(mDeviceMutex);
-			VALIDATE(mDevice->CreateDescriptorHeap(&Desc, IID_PPV_ARGS(&Result)));
-		}
+		VALIDATE(mDevice->CreateDescriptorHeap(&Desc, IID_PPV_ARGS(&Result)));
 	 
 		return Result;
 	}
@@ -302,11 +296,7 @@ public:
 	{
 		ZoneScoped;
 		ComPtr<ID3D12PipelineState> Result;
-
-		{
-			ScopedLock Lock(mDeviceMutex);
-			VALIDATE(mDevice->CreateComputePipelineState(PSODesc, IID_PPV_ARGS(&Result)));
-		}
+		VALIDATE(mDevice->CreateComputePipelineState(PSODesc, IID_PPV_ARGS(&Result)));
 		return Result;
 	}
 
@@ -315,10 +305,7 @@ public:
 		ZoneScoped;
 		ComPtr<ID3D12PipelineState> Result;
 
-		{
-			ScopedLock Lock(mDeviceMutex);
-			VALIDATE(mDevice->CreateGraphicsPipelineState(PSODesc, IID_PPV_ARGS(&Result)));
-		}
+		VALIDATE(mDevice->CreateGraphicsPipelineState(PSODesc, IID_PPV_ARGS(&Result)));
 		return Result;
 	}
 
@@ -327,10 +314,7 @@ public:
 		ZoneScoped;
 		ComPtr<ID3D12CommandAllocator> Result;
 
-		{
-			ScopedLock Lock(mDeviceMutex);
-			VALIDATE(mDevice->CreateCommandAllocator(Type, IID_PPV_ARGS(&Result)));
-		}
+		VALIDATE(mDevice->CreateCommandAllocator(Type, IID_PPV_ARGS(&Result)));
 		return Result;
 	}
 
@@ -339,13 +323,8 @@ public:
 		ZoneScoped;
 		ComPtr<ID3D12GraphicsCommandList> Result;
 
-		{
-			ScopedLock Lock(mDeviceMutex);
-			VALIDATE(mDevice->CreateCommandList(0, Type, CommandAllocator.Get(), nullptr, IID_PPV_ARGS(&Result)));
-		}
-
+		VALIDATE(mDevice->CreateCommandList(0, Type, CommandAllocator.Get(), nullptr, IID_PPV_ARGS(&Result)));
 		VALIDATE(Result->Close());
-		
 		return Result;
 	}
 
@@ -369,17 +348,14 @@ public:
 		ZoneScoped;
 		ComPtr<ID3D12Resource> Result;
 
-		{
-			ScopedLock Lock(mDeviceMutex);
-			VALIDATE(mDevice->CreateCommittedResource(
-				HeapProperties,
-				D3D12_HEAP_FLAG_NONE,
-				ResourceDescription,
-				InitialState,
-				ClearValue,
-				IID_PPV_ARGS(&Result)
-			));
-		}
+		VALIDATE(mDevice->CreateCommittedResource(
+			HeapProperties,
+			D3D12_HEAP_FLAG_NONE,
+			ResourceDescription,
+			InitialState,
+			ClearValue,
+			IID_PPV_ARGS(&Result)
+		));
 		return Result;
 	}
 
@@ -409,10 +385,7 @@ public:
 		ZoneScoped;
 		ComPtr<ID3D12Fence> Result;
 	 
-		{
-			ScopedLock Lock(mDeviceMutex);
-			VALIDATE(mDevice->CreateFence(InitialValue, Flags, IID_PPV_ARGS(&Result)));
-		}
+		VALIDATE(mDevice->CreateFence(InitialValue, Flags, IID_PPV_ARGS(&Result)));
 		return Result;
 	}
 
@@ -606,7 +579,6 @@ private:
 
 	UINT mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES];
 
-	TracyLockable(Mutex, mDeviceMutex);
 	TracyLockable(Mutex, mUploadMutex);
 
 	bool mTearingSupported = false;

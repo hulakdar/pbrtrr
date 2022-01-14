@@ -42,6 +42,7 @@ public:
 
 	void Update(const Window& WindowHandle)
 	{
+		ZoneScoped;
 		ImGuiIO& io = ImGui::GetIO();
 		io.DisplaySize = ToImVec2(WindowHandle.mSize);
 		io.MousePos = ToImVec2(WindowHandle.mMousePosition);

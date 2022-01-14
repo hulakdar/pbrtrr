@@ -116,6 +116,7 @@ void RenderContext::Init(System::Window& Window)
 
 	mGeneralDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, GENERAL_HEAP_SIZE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
 	mRTVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RTV_HEAP_SIZE);
+	mDSVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 	CreateBackBufferResources(Window);
 
 	if (mTearingSupported)
@@ -239,8 +240,6 @@ void RenderContext::UploadTextureData(TextureData& TexData, uint8_t *RawData)
 	UpdateSubresources<1>(mUploadCommandList.Get(), TexData.Resource.Get(), TextureUploadBuffer.Get(), 0, 0, 1, &SrcData);
 	mUploadTransitions.push_back(Barrier);
 }
-
-//void RenderContext::InitGUIResources()
 
 ComPtr<ID3D12PipelineState> RenderContext::CreateShaderCombination(
 	TArrayView<D3D12_INPUT_ELEMENT_DESC> PSOLayout,
@@ -409,11 +408,7 @@ ComPtr<ID3D12CommandQueue> RenderContext::CreateCommandQueue(D3D12_COMMAND_LIST_
 	QueueDesc.Type = Type;
 	QueueDesc.NodeMask = 1;
 
-	{
-		ScopedLock Lock(mDeviceMutex);
-		mDevice->CreateCommandQueue(&QueueDesc, IID_PPV_ARGS(&Result));
-	}
-
+	mDevice->CreateCommandQueue(&QueueDesc, IID_PPV_ARGS(&Result));
 	return Result;
 }
 
@@ -450,7 +445,6 @@ void RenderContext::CreateBackBufferResources(System::Window& Window)
 
 	mSwapChainWaitableObject = mSwapChain->GetFrameLatencyWaitableObject();
 
-	mDSVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 	//mSwapChain->SetFullscreenState(TRUE, NULL);
 	UpdateRenderTargetViews(Window.mSize);
 }
@@ -465,10 +459,7 @@ void RenderContext::UpdateRenderTargetViews(IVector2 Size)
 		ComPtr<ID3D12Resource> backBuffer;
 		VALIDATE(mSwapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer)));
 
-		{
-			ScopedLock Lock(mDeviceMutex);
-			mDevice->CreateRenderTargetView(backBuffer.Get(), nullptr, rtvHandle);
-		}
+		mDevice->CreateRenderTargetView(backBuffer.Get(), nullptr, rtvHandle);
 
 		SetD3DName(backBuffer, L"Back buffer %d", i);
 		mBackBuffers[i].Name = StringFromFormat("Back buffer %d", i);
