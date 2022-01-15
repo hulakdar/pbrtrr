@@ -62,7 +62,6 @@ end
         "./thirdparty/assimp",
         "./thirdparty/irrXML",
         "./thirdparty/zlib",
-        "./thirdparty/DirectXTK12"
     }
 
     files {
@@ -80,7 +79,6 @@ end
         -- thirdparty
         "imgui",
         "irrxml",
-        "DirectXTK12",
         "glfw3"
     }
 
@@ -91,7 +89,6 @@ end
         "./thirdparty/tracy",
         "./thirdparty/assimp/include",
         "./thirdparty/irrXML/include",
-        "./thirdparty/DirectXTK12/include",
         "./thirdparty/EASTL/include"
     }
 

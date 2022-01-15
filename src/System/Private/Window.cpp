@@ -11,7 +11,7 @@ void System::Callbacks::WindowSize(GLFWwindow* window, int width, int height)
 
 	if (user_this->mSize.x != width || user_this->mSize.y != height)
 	{
-		user_this->mSize = IVector2(width, height);
+		user_this->mSize = IVector2{ width, height };
 		user_this->mWindowStateDirty = true;
 	}
 }
@@ -20,7 +20,7 @@ void System::Callbacks::Scroll(GLFWwindow* window, double xoffset, double yoffse
 {
 	Window *user_this = (Window*)glfwGetWindowUserPointer(window);
 
-	user_this->mScrollOffset = Vector2((float)xoffset, (float)yoffset);
+	user_this->mScrollOffset = Vector2{ (float)xoffset, (float)yoffset };
 }
 
 void System::Callbacks::Key(GLFWwindow* window, int key, int /*scancode*/, int /*action*/, int /*mods*/)

@@ -20,24 +20,22 @@
 #include <atomic>
 #include <condition_variable>
 
-#define CAPTURE_SCREEN 1
-
 struct Camera
 {
-	float Fov;// = 60;
-	float Near;// = 0.1;
-	float Far;// = 1000000;
-	Math::Vector3 Eye;// (0, 0, 2);
-	Math::Vector2 Angles;// (0, 0);
+	float Fov = FLT_MAX;
+	float Near = FLT_MAX;
+	float Far = FLT_MAX;
+	Vector3 Eye;
+	Vector2 Angles;
 };
 
 struct MeshData
 {
 	ComPtr<ID3D12Resource>	VertexBuffer;
 	ComPtr<ID3D12Resource>	IndexBuffer;
-	uint32_t				VertexBufferSize;
-	uint32_t				IndexBufferSize;
-	uint32_t				VertexSize;
+	uint32_t				VertexBufferSize = UINT_MAX;
+	uint32_t				IndexBufferSize = UINT_MAX;
+	uint32_t				VertexSize = UINT_MAX;
 };
 
 struct Material
@@ -173,6 +171,8 @@ public:
 
 #include "Render/RenderThread.h"
 
+#include <assimp/version.h>
+
 int main(void)
 {
 	StartDebugSystem();
@@ -195,7 +195,7 @@ int main(void)
 	struct Mesh
 	{
 		String Name;
-		Math::Matrix Transform;
+		Matrix4 Transform;
 		TArray<UINT> MeshIDs;
 	};
 
@@ -203,8 +203,8 @@ int main(void)
 	MainCamera.Fov = 60;
 	MainCamera.Near = 0.1;
 	MainCamera.Far = 1000000;
-	MainCamera.Eye = Math::Vector3(0, 0, 2);
-	MainCamera.Angles = Math::Vector2(0, 0);
+	MainCamera.Eye = Vector3{ 0, 0, 2 };
+	MainCamera.Angles = Vector2{ 0, 0 };
 
 	TArray<Mesh> Meshes;
 	TArray<Material> Materials;
@@ -217,7 +217,11 @@ int main(void)
 			ZoneScopedN("Scene file parsing");
 
 			Scene = Importer.ReadFile(
+#if 0
 				"content/DamagedHelmet.glb",
+#else
+				"content/Bistro/BistroExterior.fbx",
+#endif
 				aiProcess_FlipWindingOrder | aiProcessPreset_TargetRealtime_Quality
 			);
 			if (Helper.ShouldProceed == false)
@@ -227,7 +231,7 @@ int main(void)
 			CHECK_RETURN(Scene != nullptr, "Load failed", 0);
 		}
 
-		if (Scene->HasMaterials())
+		if (false && Scene->HasMaterials())
 		{
 			Materials.resize(Scene->mNumMaterials);
 			for (UINT i = 0; i < Scene->mNumMaterials; ++i)
@@ -300,7 +304,6 @@ int main(void)
 			}
 
 			{
-				using namespace Math;
 				using namespace std;
 
 				TQueue<pair<aiNode*, aiMatrix4x4>> ProcessingQueue;
@@ -335,7 +338,7 @@ int main(void)
 							Mesh
 							{
 								String(Current->mName.C_Str()),
-								Math::Matrix(CurrentTransform[0]),
+								Matrix4(CurrentTransform[0]),
 								MOVE(MeshIDs)
 							}
 						);
@@ -344,7 +347,7 @@ int main(void)
 					{
 						aiVector3D Location, Scale, Rotation;
 						CurrentTransform.Decompose(Scale, Rotation, Location);
-						MainCamera.Eye = Math::Vector3(&Location.x);
+						MainCamera.Eye = Vector3{ Location.x, Location.y, Location.z };
 					}
 				}
 			}
@@ -462,7 +465,7 @@ int main(void)
 			0, 1, 2,
 		};
 
-		Math::Vector2 VertexData[] = {
+		Vector2 VertexData[] = {
 			{-1, -3},
 			{-1, 1},
 			{3, 1},
@@ -486,13 +489,13 @@ int main(void)
 		);
 		Quad.VertexBufferSize = sizeof(VertexData);
 
-		Quad.VertexSize = sizeof(Math::Vector2);
+		Quad.VertexSize = sizeof(Vector2);
 		SetD3DName(Quad.VertexBuffer, L"Quad VertexBuffer");
 		Context.CreateVertexBufferView(
 			Quad.VertexBuffer,
 			VertexData,
 			sizeof(VertexData),
-			sizeof(Math::Vector2)
+			sizeof(Vector2)
 		);
 	}
 
@@ -517,23 +520,23 @@ int main(void)
 	std::atomic<bool> WorkerInProgress;
 	UINT64  ReadBackReadyFence = 0;
 
-	TextureData mSceneColor = {};
+	TextureData SceneColor = {};
 	{
-		mSceneColor.Format = RenderContext::SCENE_COLOR_FORMAT;
-		mSceneColor.Size = IVector2(Window.mSize.x, Window.mSize.y);
+		SceneColor.Format = RenderContext::SCENE_COLOR_FORMAT;
+		SceneColor.Size = Window.mSize;
 
 		D3D12_CLEAR_VALUE ClearValue = {};
 		FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
 		memcpy(ClearValue.Color, clearColor, sizeof(clearColor));
 		ClearValue.Format = RenderContext::SCENE_COLOR_FORMAT;
 
-		Context.CreateTexture(mSceneColor,
+		Context.CreateTexture(SceneColor,
 			D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
 			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 			&ClearValue
 		);
-		Context.CreateSRV(mSceneColor);
-		Context.CreateRTV(mSceneColor);
+		Context.CreateSRV(SceneColor);
+		Context.CreateRTV(SceneColor);
 	}
 
 	TextureData DepthBuffer;
@@ -556,19 +559,19 @@ int main(void)
 		Context.CreateDSV(DepthBuffer);
 	}
 
-	TextureData mSceneColorSmall = {};
+	TextureData SceneColorSmall = {};
 	{
-		mSceneColorSmall.Format = RenderContext::READBACK_FORMAT;
-		mSceneColorSmall.Size = IVector2(960, 540);
-		Context.CreateTexture(mSceneColorSmall,
+		SceneColorSmall.Format = RenderContext::READBACK_FORMAT;
+		SceneColorSmall.Size = IVector2{ 960, 540 };
+		Context.CreateTexture(SceneColorSmall,
 			D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
 			D3D12_RESOURCE_STATE_COPY_SOURCE,
 			nullptr
 		);
-		Context.CreateRTV(mSceneColorSmall);
+		Context.CreateRTV(SceneColorSmall);
 	}
 
-	ComPtr<ID3D12Resource>	mSceneColorStagingBuffer = Context.CreateBuffer(mSceneColorSmall.Size.x * mSceneColorSmall.Size.y * 4, false, true);
+	ComPtr<ID3D12Resource>	SceneColorStagingBuffer = Context.CreateBuffer(SceneColorSmall.Size.x * SceneColorSmall.Size.y * 4, false, true);
 
 	UINT64 ImVertexHighwatermarks[RenderContext::BUFFER_COUNT] = {};
 	UINT64 ImIndexHighwatermarks[RenderContext::BUFFER_COUNT] = {};
@@ -640,44 +643,22 @@ int main(void)
 
 		ImGui::NewFrame();
 
-		ImGui::Begin("Meshes");
-		if (Helper.Progress >= 1.f)
+		if (Helper.Progress < 1.f)
 		{
-			for (auto& Mesh : Meshes)
-			{
-				Math::Vector3 Location, Scale;
-				Math::Quaternion Rotation;
-				Mesh.Transform.Decompose(Scale, Rotation, Location);
-
-				ImGui::BeginGroup();
-				ImGui::TextUnformatted(Mesh.Name.c_str());
-				ImGui::Text("Location: %f %f %f", Location.x, Location.y, Location.z);
-				ImGui::Text("Scale:    %f %f %f", Scale.x, Scale.y, Scale.z);
-				ImGui::Text("Rotation: %f %f %f %f", Rotation.x, Rotation.y, Rotation.z, Rotation.w);
-				ImGui::TextUnformatted("MeshIDs:");
-				for (auto ID : Mesh.MeshIDs)
-				{
-					ImGui::Text("	: %d", ID);
-					ImGui::SameLine();
-				}
-				ImGui::EndGroup();
-			}
-		}
-		else
-		{
+			ImGui::Begin("Meshes");
 			ImGui::Text("Loading Meshes");
 			ImGui::ProgressBar(Helper.Progress);
+			ImGui::End();
 		}
-		ImGui::End();
 
 		if (!WorkerInProgress && ReadbackInflight && ReadBackReadyFence < LastCompletedFence)
 		{
 			ZoneScopedN("Readback screen capture");
 
-			int x = mSceneColorSmall.Size.x;
-			int y = mSceneColorSmall.Size.y;
+			int x = SceneColorSmall.Size.x;
+			int y = SceneColorSmall.Size.y;
 
-			ComPtr<ID3D12Resource>& Resource = mSceneColorStagingBuffer;
+			ComPtr<ID3D12Resource>& Resource = SceneColorStagingBuffer;
 
 			UINT   RowCount;
 			UINT64 RowPitch;
@@ -722,7 +703,16 @@ int main(void)
 		}
 
 		EnqueueRenderThreadWork(
-			[&LastCompletedFence, &CommandAllocators, CommandList, &mSceneColor, &FrameFences, CurrentBackBufferIndex, &WaitEvent](RenderContext& Context) {
+			[
+				&LastCompletedFence,
+				&CommandAllocators,
+				CommandList,
+				&SceneColor,
+				&DepthBuffer,
+				&FrameFences,
+				&WaitEvent,
+				CurrentBackBufferIndex
+			](RenderContext& Context) {
 
 				{
 					ZoneScopedN("Wait for fence");
@@ -751,7 +741,7 @@ int main(void)
 
 						// SceneColor(srv -> render)
 						CD3DX12_RESOURCE_BARRIER::Transition(
-							mSceneColor.Resource.Get(),
+							SceneColor.Resource.Get(),
 							D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 							D3D12_RESOURCE_STATE_RENDER_TARGET
 						),
@@ -760,7 +750,7 @@ int main(void)
 				}
 
 				{
-					IVector2 Size = mSceneColor.Size;
+					IVector2 Size = SceneColor.Size;
 					CD3DX12_VIEWPORT	SceneColorViewport = CD3DX12_VIEWPORT(0.f, 0.f, (float)Size.x, (float)Size.y);
 					CD3DX12_RECT		SceneColorScissor = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
 
@@ -768,8 +758,8 @@ int main(void)
 					CommandList->RSSetScissorRects(1, &SceneColorScissor);
 
 					// Clear scene color and depth textures
-					D3D12_CPU_DESCRIPTOR_HANDLE rtv = Context.GetRTVHandle(mSceneColor);
-					D3D12_CPU_DESCRIPTOR_HANDLE dsv = Context.GetDSVHandle();
+					D3D12_CPU_DESCRIPTOR_HANDLE rtv = Context.GetRTVHandle(SceneColor);
+					D3D12_CPU_DESCRIPTOR_HANDLE dsv = Context.GetDSVHandle(DepthBuffer);
 					CommandList->OMSetRenderTargets(1, &rtv, true, &dsv);
 					{
 						FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
@@ -783,8 +773,6 @@ int main(void)
 
 		// Mesh
 		{
-			using namespace Math;
-
 			ImGui::SliderFloat("FOV", &MainCamera.Fov, 5, 160);
 			ImGui::SliderFloat("Near", &MainCamera.Near, 0.01, 3);
 			ImGui::SliderFloat("Far", &MainCamera.Far, 10000, 1000000);
@@ -807,15 +795,15 @@ int main(void)
 
 					CommandList->SetPipelineState(SimplePSO.Get());
 					CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-					Matrix Projection = Matrix::CreatePerspectiveFieldOfView(Math::Radians(Fov), (float)Window.mSize.x / (float)Window.mSize.y, Near, Far);
-					Matrix View = Matrix::CreateTranslation(-Eye) * Matrix::CreateRotationY(Angles.x) * Matrix::CreateRotationX(Angles.y);
+					Matrix4 Projection = CreatePerspectiveMatrix(DegreesToRadians(Fov), (float)Window.mSize.x / (float)Window.mSize.y, Near, Far);
+					Matrix4 View = CreateViewMatrix(-Eye, Angles);
+					Matrix4 VP = View * Projection;
 
 					for (auto& Mesh : Meshes)
 					{
-						Matrix Combined = Mesh.Transform;
+						Matrix4 Combined = Mesh.Transform;
 
-						Combined *= View;
-						Combined *= Projection;
+						Combined *= VP;
 						CommandList->SetGraphicsRoot32BitConstants(1, 16, &Combined, 0);
 						for (UINT ID : Mesh.MeshIDs)
 						{
@@ -843,7 +831,7 @@ int main(void)
 		EnqueueRenderThreadWork(
 			[
 				&CommandList,
-				&mSceneColor,
+				&SceneColor,
 				&BlitPSO,
 				&Quad,
 				&Window,
@@ -853,7 +841,7 @@ int main(void)
 				// SceneColor(render -> srv)
 				{
 					CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-						mSceneColor.Resource.Get(),
+						SceneColor.Resource.Get(),
 						D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
 					CommandList->ResourceBarrier(1, &barrier);
@@ -861,13 +849,10 @@ int main(void)
 				{
 					TracyD3D12Zone(Context.mGraphicsProfilingCtx, CommandList.Get(), "Blit scenecolor to backbuffer");
 
-					Math::Matrix Identity;
-
-					Context.BindDescriptors(CommandList, mSceneColor);
+					Context.BindDescriptors(CommandList, SceneColor);
 
 					CommandList->SetPipelineState(BlitPSO.Get());
 					CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-					CommandList->SetGraphicsRoot32BitConstants(1, 16, &Identity, 0);
 
 					D3D12_VERTEX_BUFFER_VIEW VertexBufferView;
 					VertexBufferView.BufferLocation = Quad.VertexBuffer->GetGPUVirtualAddress();
@@ -971,7 +956,7 @@ int main(void)
 				CommandList->SetPipelineState(GuiPSO.Get());
 				CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-				Math::Vector2 RenderTargetSize((float)RenderTarget.Size.x, (float)RenderTarget.Size.y);
+				Vector2 RenderTargetSize{ (float)RenderTarget.Size.x, (float)RenderTarget.Size.y };
 				CommandList->SetGraphicsRoot32BitConstants(1, 2, &RenderTargetSize, 0);
 
 				D3D12_INDEX_BUFFER_VIEW ImGuiIndexBufferView;
@@ -1014,7 +999,7 @@ int main(void)
 			});
 		}
 
-#if TRACY_ENABLE || CAPTURE_SCREEN // Send screenshot to Tracy
+#if TRACY_ENABLE // Send screenshot to Tracy
 		if (TracyIsConnected && !ReadbackInflight && !WorkerInProgress)
 		{
 			ReadbackInflight = true;
@@ -1022,19 +1007,18 @@ int main(void)
 			EnqueueRenderThreadWork(
 				[
 					&CommandList,
-					&mSceneColorSmall,
-					&mSceneColor,
+					&SceneColorSmall,
+					&SceneColor,
 					&Quad,
 					&DownsampleRasterPSO,
-					&mSceneColorStagingBuffer,
+					&SceneColorStagingBuffer,
 					&ReadBackReadyFence,
-					&ReadbackInflight,
 					CurrentBackBufferIndex
 				]
 			(RenderContext& Context) {
 				TracyD3D12Zone(Context.mGraphicsProfilingCtx, CommandList.Get(), "Downsample scenecolor to readback");
 
-				TextureData& Small = mSceneColorSmall;
+				TextureData& Small = SceneColorSmall;
 				IVector2 Size = Small.Size;
 
 				// readback(copy -> render)
@@ -1052,7 +1036,7 @@ int main(void)
 					D3D12_CPU_DESCRIPTOR_HANDLE rtv = Context.GetRTVHandle(Small);
 					CommandList->OMSetRenderTargets(1, &rtv, true, nullptr);
 
-					Context.BindDescriptors(CommandList, mSceneColor);
+					Context.BindDescriptors(CommandList, SceneColor);
 
 					D3D12_VERTEX_BUFFER_VIEW VertexBufferView;
 					VertexBufferView.BufferLocation = Quad.VertexBuffer->GetGPUVirtualAddress();
@@ -1095,7 +1079,7 @@ int main(void)
 					bufferFootprint.Footprint.RowPitch = (UINT)RowPitch;
 					bufferFootprint.Footprint.Format = Small.Format;
 
-					CD3DX12_TEXTURE_COPY_LOCATION Dst(mSceneColorStagingBuffer.Get(), bufferFootprint);
+					CD3DX12_TEXTURE_COPY_LOCATION Dst(SceneColorStagingBuffer.Get(), bufferFootprint);
 					CD3DX12_TEXTURE_COPY_LOCATION Src(Small.Resource.Get());
 					CommandList->CopyTextureRegion(&Dst,0,0,0,&Src,nullptr);
 

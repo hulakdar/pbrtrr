@@ -473,21 +473,14 @@ public:
 		return mBackBuffers[Index];
 	}
 
-	//D3D12_CPU_DESCRIPTOR_HANDLE GetRTVHandleForBackBuffer()
-	//{
-		//CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(mRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-			//mCurrentBackBufferIndex, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
-		//return rtv;
-	//}
-
-	D3D12_CPU_DESCRIPTOR_HANDLE GetDSVHandle()
+	D3D12_CPU_DESCRIPTOR_HANDLE GetDSVHandle(TextureData& Texture)
 	{
-		CD3DX12_CPU_DESCRIPTOR_HANDLE rtv(
+		CD3DX12_CPU_DESCRIPTOR_HANDLE dsv(
 			mDSVDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-			0, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_DSV]
+			Texture.DSVIndex, mDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_DSV]
 		);
 
-		return rtv;
+		return dsv;
 	}
 
 	void BindDescriptors(ComPtr<ID3D12GraphicsCommandList>& CommandList, TextureData& Tex)

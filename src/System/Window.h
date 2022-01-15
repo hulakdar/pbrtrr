@@ -25,9 +25,6 @@ namespace Callbacks
 	void MouseButton(GLFWwindow* window, int button, int action, int mods);
 }
 
-using namespace Math;
-
-
 class Window
 {
 public:
@@ -66,7 +63,7 @@ public:
 	void Update()
 	{
 		ZoneScoped;
-		mScrollOffset = Vector2(0, 0);
+		mScrollOffset = Vector2{ 0, 0 };
 		mKeyboard.reset();
 
 		glfwPollEvents();
@@ -99,7 +96,7 @@ private:
 		ZoneScoped;
 		double MouseX, MouseY;
 		glfwGetCursorPos(mHandle, &MouseX, &MouseY);
-		mMousePosition = Vector2((float)MouseX, (float)MouseY);
+		mMousePosition = Vector2{(float)MouseX, (float)MouseY};
 	}
 };
 
