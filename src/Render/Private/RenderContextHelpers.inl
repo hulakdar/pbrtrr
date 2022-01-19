@@ -1,3 +1,18 @@
+UINT BlockSizeFromFormat(DXGI_FORMAT Format)
+{
+	switch (Format)
+	{
+	case DXGI_FORMAT_BC1_TYPELESS:
+	case DXGI_FORMAT_BC1_UNORM:
+	case DXGI_FORMAT_BC1_UNORM_SRGB:
+	case DXGI_FORMAT_BC4_TYPELESS:
+	case DXGI_FORMAT_BC4_SNORM:
+	case DXGI_FORMAT_BC4_UNORM:
+		return 8;
+	default:
+		return 16;
+	}
+}
 
 UINT ComponentCountFromFormat(DXGI_FORMAT Format)
 {

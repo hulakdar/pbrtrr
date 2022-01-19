@@ -17,7 +17,7 @@ Matrix4::Matrix4(float* Src)
 Vector4 Matrix4::Row(int Index)
 {
 	CHECK(Index < 4, "");
-	Vector4* Ptr = &m0;
+	Vector4* Ptr = (Vector4*)&m00;
 	return Ptr[Index];
 }
 
@@ -64,11 +64,12 @@ Matrix4 operator*(Matrix4& A, Matrix4& B)
 Matrix4 CreatePerspectiveMatrix(float FovInRadians, float AspectRatio, float Near, float Far)
 {
 	float Scale = 1 / tan(FovInRadians / 2);
+	float Extent = Far-Near;
 	float Result[] = {
-		Scale, 0, 0, 0,
-		0, Scale, 0, 0,
-		0, 0, -Far/(Far-Near), -1,
-		0, 0, -Far*Near/(Far-Near), 0,
+		Scale, 0,     0,               0,
+		0,     Scale, 0,               0,
+		0,     0,    -Far/Extent,     -1,
+		0,     0,    -Far*Near/Extent, 0,
 	};
 	return Matrix4(Result);
 }

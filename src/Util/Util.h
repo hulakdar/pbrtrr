@@ -7,6 +7,14 @@
 
 #define MOVE(x) EASTL_MOVE_INLINE(x)
 
+template <typename T>
+T ReadAndAdvance(uint8_t*& DataPtr)
+{
+	T Result = *(T*)DataPtr;
+	DataPtr += sizeof(T);
+	return Result;
+}
+
 void WaitForFenceValue(ComPtr<ID3D12Fence>& Fence, uint64_t FenceValue, HANDLE Event);
 void Flush(ComPtr<ID3D12CommandQueue>& CommandQueue, ComPtr<ID3D12Fence>& Fence, uint64_t& FenceValue, HANDLE FenceEvent);
 uint64_t Signal(ComPtr<ID3D12CommandQueue>& CommandQueue, ComPtr<ID3D12Fence>& Fence, uint64_t& FenceValue);

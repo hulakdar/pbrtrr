@@ -212,16 +212,16 @@ int main(void)
 	TArray<TextureData> Textures;
 
 	{
+#if 0
+		String FilePath = "content/DamagedHelmet.glb";
+#else
+		String FilePath = "content/Bistro/BistroExterior.fbx";
+#endif
 		const aiScene* Scene = nullptr;
 		{
 			ZoneScopedN("Scene file parsing");
-
 			Scene = Importer.ReadFile(
-#if 0
-				"content/DamagedHelmet.glb",
-#else
-				"content/Bistro/BistroExterior.fbx",
-#endif
+				FilePath.c_str(),
 				aiProcess_FlipWindingOrder | aiProcessPreset_TargetRealtime_Quality
 			);
 			if (Helper.ShouldProceed == false)
@@ -231,7 +231,7 @@ int main(void)
 			CHECK_RETURN(Scene != nullptr, "Load failed", 0);
 		}
 
-		if (false && Scene->HasMaterials())
+		if (Scene->HasMaterials())
 		{
 			Materials.resize(Scene->mNumMaterials);
 			for (UINT i = 0; i < Scene->mNumMaterials; ++i)
@@ -243,14 +243,71 @@ int main(void)
 				{
 					aiString TexPath;
 					MaterialPtr->GetTexture(aiTextureType_DIFFUSE, j, &TexPath);
-					if (TexPath.C_Str()[0] == '*')
+					if (TexPath.length && TexPath.data[0] == '*')
 					{
 						uint32_t Index = atoi(TexPath.C_Str() + 1);
 						Tmp.DiffuseTextures.push_back(Index);
 					}
+					else if (TexPath.length)
+					{
+						StringView MeshFolder(FilePath.c_str(), FilePath.find_last_of("\\/"));
+
+						String Path(MeshFolder);
+						Path.append("/");
+						Path.append(TexPath.data, TexPath.length);
+
+						Textures.emplace_back();
+						auto& Tex = Textures.back();
+
+						StringView Binary = LoadWholeFile(Path);
+						if (uint8_t* Data = (uint8_t*)Binary.data())
+						{
+							UINT Magic = ReadAndAdvance<UINT>(Data);
+							CHECK(Magic == DDS_MAGIC, "This is not a valid DDS");
+
+							DDS_HEADER Header = ReadAndAdvance<DDS_HEADER>(Data);
+							if (Header.ddspf.dwFlags & DDPF_FOURCC)
+							{
+								if (Header.ddspf.dwFourCC == *(UINT*)"DX10")
+								{
+									DDS_HEADER_DXT10 HeaderDX10 = ReadAndAdvance<DDS_HEADER_DXT10>(Data);
+								}
+								else if (Header.ddspf.dwFourCC == *(UINT*)"DXT1")
+								{
+									Tex.Format = DXGI_FORMAT_BC1_UNORM;
+								}
+								else if (Header.ddspf.dwFourCC == *(UINT*)"DXT3")
+								{
+									Tex.Format = DXGI_FORMAT_BC2_UNORM;
+								}
+								else if (Header.ddspf.dwFourCC == *(UINT*)"DXT5")
+								{
+									Tex.Format = DXGI_FORMAT_BC3_UNORM;
+								}
+								else if (Header.ddspf.dwFourCC == *(UINT*)"BC4U")
+								{
+									Tex.Format = DXGI_FORMAT_BC4_UNORM;
+								}
+								else if (Header.ddspf.dwFourCC == *(UINT*)"BC4S")
+								{
+									Tex.Format = DXGI_FORMAT_BC4_SNORM;
+								}
+
+								Tex.Size = IVector2{ (int)Header.dwWidth, (int)Header.dwHeight };
+								Tex.RawData = Data;
+								GetRenderContext().CreateTexture(Tex);
+								GetRenderContext().UploadTextureData(Tex, Data, Header.dwPitchOrLinearSize);
+								GetRenderContext().CreateSRV(Tex);
+							}
+						}
+						else
+						{
+							DEBUG_BREAK();
+						}
+					}
 					else
 					{
-						//DEBUG_BREAK();
+						DEBUG_BREAK();
 					}
 				}
 			}
@@ -1129,6 +1186,7 @@ int main(void)
 	EnqueueRenderThreadWork([&FrameFences,CurrentBackBufferIndex, WaitEvent, &Done, &WakeUpMain](RenderContext& Context) {
 		Flush(Context.mGraphicsQueue, FrameFences[CurrentBackBufferIndex - 1], Context.mCurrentFenceValue, WaitEvent);
 		Context.WaitForUploadFinish();
+		Context.Deinit();
 		Done = true;
 		WakeUpMain.notify_one();
 	});

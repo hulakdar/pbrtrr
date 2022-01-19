@@ -10,14 +10,18 @@ using WStringView = eastl::wstring_view;
 
 static String StringFromFormat(const char* Format, ...)
 {
-	char Result[512];
+	String Result(16, '\0');
 
-	va_list ArgList;
-	va_start(ArgList, Format);
-	_vsprintf_l(Result, Format, NULL, ArgList);
-	va_end(ArgList);
+	int CharNumber = -1;
+	do {
+		va_list ArgList;
+		va_start(ArgList, Format);
+		CharNumber = vsprintf_s(Result.data(), Result.length(), Format, ArgList);
+		va_end(ArgList);
+	} while (CharNumber == -1 || CharNumber > Result.length());
+	
 
-	return String(Result);
+	return Result;
 }
 
 static bool EndsWith(StringView Word, StringView Suffix)

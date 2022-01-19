@@ -44,7 +44,12 @@ StringView LoadWholeFile(StringView Path)
 		return CachedValue->second;
 	}
 
-	std::ifstream infile(Path.data());
+	std::ifstream infile(Path.data(),std::ios::binary);
+	if (!infile.good())
+	{
+		return {};
+	}
+
 	infile.seekg(0, std::ios::end);
 	size_t file_size_in_byte = infile.tellg();
 	String data;

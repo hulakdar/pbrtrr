@@ -1,4 +1,5 @@
 #include "Render/Context.h"
+#include "Util/Math.hpp"
 
 namespace {
 	#include "RenderContextHelpers.inl"
@@ -93,9 +94,7 @@ namespace {
 
 		return Result;
 	}
-
 }
-
 
 void RenderContext::Init(System::Window& Window)
 {
@@ -215,19 +214,29 @@ void RenderContext::Init(System::Window& Window)
 	}
 } 
 
-void RenderContext::UploadTextureData(TextureData& TexData, uint8_t *RawData)
+void RenderContext::UploadTextureData(TextureData& TexData, const uint8_t *RawData, uint32_t RawDataSize)
 {
 	ZoneScoped;
 
 	UINT64 UploadBufferSize = GetRequiredIntermediateSize(TexData.Resource.Get(), 0, 1);
 	ComPtr<ID3D12Resource> TextureUploadBuffer = CreateBuffer(UploadBufferSize, true);
-	UINT Components = ComponentCountFromFormat(TexData.Format);
 
 	IVector2 Size = TexData.Size;
 	D3D12_SUBRESOURCE_DATA SrcData = {};
 	SrcData.pData = RawData;
-	SrcData.RowPitch = Size.x * Components;
-	SrcData.SlicePitch = Size.x * Size.y * Components;
+
+	if (RawDataSize == 0)
+	{
+		UINT Components = ComponentCountFromFormat(TexData.Format);
+		SrcData.RowPitch = Size.x * Components;
+		SrcData.SlicePitch = Size.x * Size.y * Components;
+	}
+	else
+	{
+		UINT BlockSize = BlockSizeFromFormat(TexData.Format);
+		SrcData.RowPitch = MAX(1, ((Size.x + 3) / 4)) * BlockSize;
+		SrcData.SlicePitch = RawDataSize;
+	}
 
 	D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 		TexData.Resource.Get(),
@@ -474,4 +483,11 @@ void RenderContext::UpdateRenderTargetViews(IVector2 Size)
 bool  RenderContext::IsSwapChainReady()
 {
 	return WaitForSingleObjectEx(mSwapChainWaitableObject, 1, true) == WAIT_OBJECT_0;
+}
+
+void RenderContext::Deinit()
+{
+	TracyD3D12Destroy(mGraphicsProfilingCtx);
+	TracyD3D12Destroy(mComputeProfilingCtx);
+	TracyD3D12Destroy(mCopyProfilingCtx);
 }

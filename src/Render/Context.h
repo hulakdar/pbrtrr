@@ -7,28 +7,13 @@
 #include "Util/Util.h"
 #include "external/d3dx12.h"
 #include "Threading/Mutex.h"
+#include "Texture.h"
 
 #include <dxgi1_6.h>
 #include <imgui.h>
 #include <d3dcompiler.h>
 #include <Tracy.hpp>
 #include <TracyD3D12.hpp>
-
-//#define TEST_WARP
-
-struct TextureData
-{
-	ComPtr<ID3D12Resource>	Resource;
-
-	String		Name = {};
-	IVector2	Size = {};
-	DXGI_FORMAT	Format = DXGI_FORMAT_UNKNOWN;
-	UINT		SRVIndex = UINT_MAX;
-	UINT		UAVIndex = UINT_MAX;
-	UINT		RTVIndex = UINT_MAX;
-	UINT		DSVIndex = UINT_MAX;
-	uint8_t*	RawData = nullptr;
-};
 
 enum ShaderType
 {
@@ -41,17 +26,12 @@ class RenderContext
 {
 public:
 	void Init(System::Window& Window);
-	void UploadTextureData(TextureData& TexData, uint8_t *RawData);
+	void UploadTextureData(TextureData& TexData, const uint8_t* RawData, uint32_t RawDataSize = 0);
 	void CreateBackBufferResources(System::Window& Window);
 
 	bool IsSwapChainReady();
 
-	void Deinit()
-	{
-		TracyD3D12Destroy(mGraphicsProfilingCtx);
-		TracyD3D12Destroy(mComputeProfilingCtx);
-		TracyD3D12Destroy(mCopyProfilingCtx);
-	}
+	void Deinit();
 
 	UINT mCurrentRenderTargetIndex = BUFFER_COUNT;
 	void CreateRTV(TextureData& TexData)
