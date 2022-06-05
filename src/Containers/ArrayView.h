@@ -61,3 +61,5 @@ public:
 	Iterator begin() { return Iterator(Data); }
 	Iterator end() { return Iterator(Data + Size); }
 };
+
+using BinaryBlob = TArrayView<uint8_t>;

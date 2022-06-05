@@ -12,7 +12,7 @@ String StringFromFormat(const char* Format, ...)
 	String Result(CharLen, '\0');
 
 	va_start(ArgList, Format);
-	stbsp_vsnprintf(Result.data(), Result.length(), Format, ArgList);
+	stbsp_vsnprintf(Result.data(), (int)Result.length(), Format, ArgList);
 	va_end(ArgList);
 
 	return Result;

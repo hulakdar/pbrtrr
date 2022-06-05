@@ -9,14 +9,14 @@
 
 namespace {
 	TMap<const char*, String> FileCache;
-	RWLock FileCacheLock;
+	//RWLock FileCacheLock;
 }
 
 StringView LoadWholeFile(StringView Path)
 {
 	ZoneScoped;
 	{
-		ReadLock Lock(FileCacheLock);
+		//ReadLock Lock(FileCacheLock);
 		auto CachedValue = FileCache.find(Path.data());
 		if (CachedValue != FileCache.end())
 		{
@@ -37,7 +37,7 @@ StringView LoadWholeFile(StringView Path)
 	infile.seekg(0, std::ios::beg);
 	infile.read(&data[0], file_size_in_byte);
 
-	WriteLock Lock(FileCacheLock);
+	//WriteLock Lock(FileCacheLock);
 	return FileCache[Path.data()] = MOVE(data);
 }
 
