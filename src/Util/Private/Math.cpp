@@ -54,6 +54,15 @@ namespace {
 	}
 }
 
+Matrix4::Matrix4()
+{
+	memset(&m00, 0, sizeof(m00) * 16);
+	m00 = 1.f;
+	m11 = 1.f;
+	m22 = 1.f;
+	m33 = 1.f;
+}
+
 Matrix4::Matrix4(float* Src)
 {
 	::memcpy(&m00, Src, sizeof(*this));
@@ -164,7 +173,7 @@ Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 PolarAngles)
 	return Matrix4(T)*Matrix4(R);
 }
 
-Matrix4 CreateViewMatrix(Vector3 Translation, Vector2 YawPitch)
+Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 YawPitch)
 {
 	float Yaw[] = {
 		cosf(YawPitch.x),  0, sinf(YawPitch.x), 0,

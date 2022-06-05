@@ -65,6 +65,10 @@ struct TextureBindingInfo
 {
 	uint32_t Index;
 	bool Numbered;
+
+	Vec3 Offset{0};
+	Vec3 Scale{0};
+	bool b16BitIndeces = false;
 };
 
 struct Material
@@ -334,6 +338,9 @@ DXGI_FORMAT FormatFromFourCC(DWORD FourCC)
 		return DXGI_FORMAT_UNKNOWN;
 	}
 }
+TracyD3D12Ctx	gGraphicsProfilingCtx;
+TracyD3D12Ctx	gComputeProfilingCtx;
+TracyD3D12Ctx	gCopyProfilingCtx;
 
 int main(void)
 {
@@ -475,15 +482,11 @@ int main(void)
 								CreateSRV(Tex);
 								CHECK(Tex.Format != DXGI_FORMAT_UNKNOWN, "Unknown format");
 
-								Tex.Size = IVector2{ (int)Header.dwWidth, (int)Header.dwHeight };
-								Tex.RawData = BinaryBlob(Data, Header.dwPitchOrLinearSize);
-								Context.CreateTexture(Tex);
-								Context.UploadTextureData(Tex);
-								Context.CreateSRV(Tex);
-							}
-							else
-							{
-								DEBUG_BREAK();
+								Tex.Width = Header.dwWidth;
+								Tex.Height = Header.dwHeight;
+								CreateTexture(Tex, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+								UploadTextureData(Tex, Data, Header.dwPitchOrLinearSize);
+								CreateSRV(Tex);
 							}
 						}
 						Tmp.DiffuseTextures.push_back({ Index, false });
@@ -695,7 +698,7 @@ int main(void)
 
 		DXGI_FORMAT RenderTargetFormat = SCENE_COLOR_FORMAT;
 		TArray<StringView> EntryPoints = {"MainPS", "MainVS"};
-		Value = Context.CreateShaderCombination(
+		Value = CreateShaderCombination(
 			PSOLayout,
 			EntryPoints,
 			"content/shaders/Simple.hlsl",
@@ -969,8 +972,6 @@ int main(void)
 
 	uint64_t CurrentFenceValue = 0;
 	uint64_t FrameFenceValues[3] = {};
-
-	Context.FlushUpload();
 
 	std::atomic<UINT64> LastCompletedFence = 0;
 	std::atomic<uint64_t> QueuedFrameCount = 0;
