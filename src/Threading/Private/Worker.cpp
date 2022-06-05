@@ -1,21 +1,26 @@
 
 #include "Threading/DedicatedThread.h"
 #include "Util/Util.h"
-#include "..\Worker.h"
+#include "../Worker.h"
 
 DedicatedThreadData gWorkersDedicatedThreadData;
-std::thread			gWorkerThreads[4];
+std::thread			gWorkerThreads[3];
 
-void EnqueueToWorker(eastl::function<void(void)> WorkItem)
+DedicatedThreadData* GetWorkerDedicatedThreadData()
 {
-	EnqueueWork(&gWorkersDedicatedThreadData, WorkItem);
+	return &gWorkersDedicatedThreadData;
+}
+
+Ticket EnqueueToWorker(const TFunction<void(void)>& WorkItem)
+{
+	return EnqueueWork(&gWorkersDedicatedThreadData, MOVE(WorkItem));
 }
 
 void StartWorkerThreads()
 {
-	for (int i = 0; i < ArraySize(gWorkerThreads); ++i)
+	for (int i = 0; i < ArrayCount(gWorkerThreads); ++i)
 	{
-		gWorkerThreads[i] = StartDedicatedThread(&gWorkersDedicatedThreadData);
+		gWorkerThreads[i] = StartDedicatedThread(&gWorkersDedicatedThreadData, L"Worker");
 	}
 }
 
@@ -23,7 +28,7 @@ void StopWorkerThreads()
 {
 	StopDedicatedThread(&gWorkersDedicatedThreadData);
 
-	for (int i = 0; i < ArraySize(gWorkerThreads); ++i)
+	for (int i = 0; i < ArrayCount(gWorkerThreads); ++i)
 		if (gWorkerThreads[i].joinable())
 			gWorkerThreads[i].join();
 }

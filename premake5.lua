@@ -30,7 +30,7 @@ filter "configurations:Release"
     
 filter ""
 
-include ("thirdparty/imgui/premake5.lua")
+include ("thirdparty/premake5.lua")
 
 project "pbrtrr"
 if _OPTIONS["SHIPPING"] == "1" then
@@ -58,13 +58,16 @@ end
 
     libdirs {
         -- thirdparty
-        "./thirdparty/EASTL",
         "./thirdparty/assimp",
         "./thirdparty/irrXML",
         "./thirdparty/zlib",
+        "./thirdparty/EASTL",
+        "./thirdparty/winpixeventruntime/bin/x64",
     }
 
     files {
+        "./thirdparty/imgui/backends/imgui_impl_glfw.cpp",
+        "./thirdparty/imgui/backends/imgui_impl_glfw.h",
         "./thirdparty/tracy/TracyClient.cpp",
         "./thirdparty/EASTL/EASTL.natvis",
         "./src/**.h",   "./src/**.cpp",
@@ -79,17 +82,20 @@ end
         -- thirdparty
         "imgui",
         "irrxml",
-        "glfw3"
+        "glfw3",
+        "WinPixEventRuntime",
     }
 
     includedirs {   
         "./src/",
         "./thirdparty/glfw/include",
         "./thirdparty/imgui",
+        "./thirdparty/imnodes",
         "./thirdparty/tracy",
         "./thirdparty/assimp/include",
         "./thirdparty/irrXML/include",
-        "./thirdparty/EASTL/include"
+        "./thirdparty/EASTL/include",
+        "./thirdparty/winpixeventruntime/include",
     }
 
     defines {
@@ -106,6 +112,7 @@ end
         defines {
             "GLFW_INCLUDE_NONE",
             "EA_DEBUG",
+            "USE_PIX",
             "BUILD_DEBUG"
         }
         links {
@@ -115,9 +122,11 @@ end
         }
 
     filter "Profile"
+        staticruntime "Off"
         defines {
             "TRACY_ENABLE",
-            "BUILD_DEVELOPMENT"
+            "USE_PIX",
+            "BUILD_PROFILE",
         }
         links {
             "EASTL",
@@ -126,7 +135,11 @@ end
         }
     
     filter "Development"
-        defines { "BUILD_DEVELOPMENT" }
+        staticruntime "Off"
+        defines {
+            "BUILD_DEVELOPMENT",
+            "USE_PIX",
+        }
         links {
             "EASTL",
             "assimp-vc142-mt",
@@ -135,6 +148,7 @@ end
 
 
     filter "Release"
+        staticruntime "Off"
         defines { "BUILD_RELEASE" }
         links {
             "EASTL",

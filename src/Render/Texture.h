@@ -1,4 +1,30 @@
 #pragma once
+#include <stdint.h>
+
+struct TexID
+{
+	uint32_t Value = 0;
+};
+
+struct TextureData
+{
+	TexID    ID;
+	int32_t  Width  = 0;
+	int32_t  Height = 0;
+	uint32_t Format = 0;
+	uint32_t SRV    = 0;
+	uint32_t UAV    = 0;
+	uint32_t RTV    = 0;
+	uint32_t DSV    = 0;
+};
+
+struct ID3D12Resource;
+
+TexID           StoreTexture(ID3D12Resource* Resource, const char* Name = "");
+ID3D12Resource* GetTextureResource(TexID Id);
+void            FreeTextureResource(TexID Id);
+const char*     GetTextureName(TexID Id);
+void            ReleaseTextures();
 
 // from docs.microsoft.com
 #define DDS_MAGIC 0x20534444
@@ -9,37 +35,39 @@
 #define DDPF_YUV         0x200
 #define DDPF_LUMINANCE   0x20000
 
+#define MAGIC(x) (*(uint32_t*)(#x))
+
 struct DDS_PIXELFORMAT
 {
-  DWORD dwSize;
-  DWORD dwFlags;
-  DWORD dwFourCC;
-  DWORD dwRGBBitCount;
-  DWORD dwRBitMask;
-  DWORD dwGBitMask;
-  DWORD dwBBitMask;
-  DWORD dwABitMask;
+  uint32_t dwSize;
+  uint32_t dwFlags;
+  uint32_t dwFourCC;
+  uint32_t dwRGBBitCount;
+  uint32_t dwRBitMask;
+  uint32_t dwGBitMask;
+  uint32_t dwBBitMask;
+  uint32_t dwABitMask;
 };
 
 struct DDS_HEADER
 {
-  DWORD           dwSize;
-  DWORD           dwFlags;
-  DWORD           dwHeight;
-  DWORD           dwWidth;
-  DWORD           dwPitchOrLinearSize;
-  DWORD           dwDepth;
-  DWORD           dwMipMapCount;
-  DWORD           dwReserved1[11];
+  uint32_t        dwSize;
+  uint32_t        dwFlags;
+  uint32_t        dwHeight;
+  uint32_t        dwWidth;
+  uint32_t        dwPitchOrLinearSize;
+  uint32_t        dwDepth;
+  uint32_t        dwMipMapCount;
+  uint32_t        dwReserved1[11];
   DDS_PIXELFORMAT ddspf;
-  DWORD           dwCaps;
-  DWORD           dwCaps2;
-  DWORD           dwCaps3;
-  DWORD           dwCaps4;
-  DWORD           dwReserved2;
+  uint32_t        dwCaps;
+  uint32_t        dwCaps2;
+  uint32_t        dwCaps3;
+  uint32_t        dwCaps4;
+  uint32_t        dwReserved2;
 };
 
-enum D3D10_RESOURCE_DIMENSION {
+enum DDS_RESOURCE_DIMENSION {
   D3D10_RESOURCE_DIMENSION_UNKNOWN,
   D3D10_RESOURCE_DIMENSION_BUFFER,
   D3D10_RESOURCE_DIMENSION_TEXTURE1D,
@@ -49,24 +77,12 @@ enum D3D10_RESOURCE_DIMENSION {
 
 struct DDS_HEADER_DXT10
 {
-  DXGI_FORMAT              dxgiFormat;
-  D3D10_RESOURCE_DIMENSION resourceDimension;
-  UINT                     miscFlag;
-  UINT                     arraySize;
-  UINT                     miscFlags2;
+  enum DXGI_FORMAT       dxgiFormat;
+  DDS_RESOURCE_DIMENSION resourceDimension;
+  uint32_t               miscFlag;
+  uint32_t               arraySize;
+  uint32_t               miscFlags2;
 };
 
-struct TextureData
-{
-	ComPtr<ID3D12Resource>	Resource;
 
-	String		Name = {};
-	IVector2	Size = {};
-	DXGI_FORMAT	Format = DXGI_FORMAT_UNKNOWN;
-	UINT		SRVIndex = UINT_MAX;
-	UINT		UAVIndex = UINT_MAX;
-	UINT		RTVIndex = UINT_MAX;
-	UINT		DSVIndex = UINT_MAX;
-	uint8_t*	RawData = nullptr;
-};
 

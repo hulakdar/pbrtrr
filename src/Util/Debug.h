@@ -1,6 +1,5 @@
 #pragma once
 
-#include <windows.h>
 #include <iostream>
 
 #define DEBUG_BREAK() \
@@ -17,13 +16,6 @@
 			DEBUG_BREAK(); \
 		}
 
-# define CHECK_RETURN(x, msg, ret) \
-		if (!(x)) \
-		{ \
-			CHECK(x, msg); \
-			return ret; \
-		}
-
 # define VALIDATE(x) \
 		if (!Debug::ValidateImpl(x)) \
 		{ \
@@ -32,7 +24,6 @@
 
 #else
 # define CHECK(x, msg) ((void)(x))
-# define CHECK_RETURN(x, msg, ret) if (!(x)) { return ret; }
 # define VALIDATE(x) (x)
 #endif
 

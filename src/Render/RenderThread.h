@@ -1,10 +1,7 @@
 #pragma once
 
-#include "System/Window.h"
-#include "Render/Context.h"
+#include <Threading/DedicatedThread.h>
 
-void StartRenderThread(System::Window& Window);
+void StartRenderThread();
 void StopRenderThread();
-
-void EnqueueRenderThreadWork(eastl::function<void(RenderContext&)>);
-RenderContext& GetRenderContext();
+Ticket EnqueueRenderThreadWork(const TFunction<void(void)>&);

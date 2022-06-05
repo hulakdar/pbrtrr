@@ -6,16 +6,16 @@
 #include <iostream>
 #include <sstream>
 #include <dxgi1_6.h>
-#include <directxmath.h>
 
 namespace {
 	class Stream : public std::stringbuf
 	{
 	public:
 		~Stream() { sync(); }
-		int sync()
+		virtual int sync() override
 		{
 			::OutputDebugStringA(str().c_str());
+			printf(str().c_str());
 			str(std::string()); // Clear the string buffer
 			return 0;
 		}
@@ -25,30 +25,31 @@ namespace {
 	{
 	public:
 		~WStream() { sync(); }
-		int sync()
+		virtual int sync() override
 		{
 			::OutputDebugStringW(str().c_str());
+			wprintf(str().c_str());
 			str(std::wstring()); // Clear the string buffer
 			return 0;
 		}
 	};
-	Stream mStream;
-	WStream mWStream;
+	Stream  gStream;
+	WStream gWStream;
 }
 
 void StartDebugSystem()
 {
-	CHECK(DirectX::XMVerifyCPUSupport(), "This CPU does not support DirectXMath (or instruction set selected while compiling)");
-#ifndef RELEASE
 	// for printing to cout
-	std::cout.rdbuf(&mStream);
-	std::wcout.rdbuf(&mWStream);
-
+	std::cout.rdbuf(&gStream);
+	std::wcout.rdbuf(&gWStream);
+#if !defined(BUILD_RELEASE) && !defined(BUILD_PROFILE)
 	// d3d12 debug layer
 	{
-		ComPtr<ID3D12Debug> debugInterface;
+		ComPtr<ID3D12Debug3> debugInterface;
 		VALIDATE(D3D12GetDebugInterface(IID_PPV_ARGS(&debugInterface)));
 		debugInterface->EnableDebugLayer();
+		debugInterface->SetEnableGPUBasedValidation(true);
+		debugInterface->SetEnableSynchronizedCommandQueueValidation(true);
 	}
 #endif
 }

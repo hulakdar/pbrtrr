@@ -10,7 +10,7 @@ VertexShaderOutput MainVS(float4 position : POSITION)
 	VertexShaderOutput output;
 
 	output.Position = position;
-	output.UV = position * float2(0.5, -0.5) + 0.5;
+	output.UV = position.xy * float2(0.5, -0.5) + 0.5;
 
 	return output;
 }

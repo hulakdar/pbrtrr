@@ -10,31 +10,6 @@ namespace {
 	TMap<const char*, String> FileCache;
 }
 
-void WaitForFenceValue(ComPtr<ID3D12Fence>& Fence, uint64_t FenceValue, HANDLE Event)
-{
-	ZoneScoped;
-	if (Fence->GetCompletedValue() < FenceValue)
-	{
-		VALIDATE(Fence->SetEventOnCompletion(FenceValue, Event));
-		::WaitForSingleObject(Event, MAXDWORD);
-	}
-}
-
-uint64_t Signal(ComPtr<ID3D12CommandQueue>& CommandQueue, ComPtr<ID3D12Fence>& Fence, uint64_t& FenceValue)
-{
-	uint64_t FenceValueForSignal = ++FenceValue;
-	VALIDATE(CommandQueue->Signal(Fence.Get(), FenceValueForSignal));
-
-	return FenceValueForSignal;
-}
-
-void Flush(ComPtr<ID3D12CommandQueue>& CommandQueue, ComPtr<ID3D12Fence>& Fence, uint64_t& FenceValue, HANDLE FenceEvent)
-{
-	ZoneScoped;
-	uint64_t fenceValueForSignal = Signal(CommandQueue, Fence, FenceValue);
-	WaitForFenceValue(Fence, fenceValueForSignal, FenceEvent);
-}
-
 StringView LoadWholeFile(StringView Path)
 {
 	ZoneScoped;
@@ -86,7 +61,7 @@ void operator delete(void* ptr) noexcept
 	free(ptr);
 }
 
-void operator delete[](void* ptr, size_t count) noexcept
+void operator delete[](void* ptr, size_t) noexcept
 {
 	TracyFree(ptr);
 	free(ptr);

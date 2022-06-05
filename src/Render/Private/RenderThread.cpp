@@ -1,32 +1,14 @@
-
+#include "Containers/Function.h"
 #include "Threading/DedicatedThread.h"
-#include "Render/Context.h"
+#include "Util/Util.h"
 #include "..\RenderThread.h"
 
 DedicatedThreadData gRenderDedicatedThreadData;
 std::thread gRenderDedicatedThread;
 
-RenderContext gRenderContext;
-
-void EnqueueRenderThreadWork(eastl::function<void(RenderContext&)> RenderThreadWork)
+void StartRenderThread()
 {
-	ZoneScoped;
-	EnqueueWork(&gRenderDedicatedThreadData,
-		[RenderThreadWork]() {
-			RenderThreadWork(gRenderContext);
-		}
-	);
-}
-
-RenderContext& GetRenderContext()
-{
-	return gRenderContext;
-}
-
-void StartRenderThread(System::Window& Window)
-{
-	gRenderContext.Init(Window);
-	gRenderDedicatedThread = StartDedicatedThread(&gRenderDedicatedThreadData);
+	gRenderDedicatedThread = StartDedicatedThread(&gRenderDedicatedThreadData, L"RenderThread");
 }
 
 void StopRenderThread()
@@ -37,3 +19,8 @@ void StopRenderThread()
 		gRenderDedicatedThread.join();
 }
 
+Ticket EnqueueRenderThreadWork(const TFunction<void(void)>& RenderThreadWork)
+{
+	ZoneScoped;
+	return EnqueueWork(&gRenderDedicatedThreadData, MOVE(RenderThreadWork));
+}

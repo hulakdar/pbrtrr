@@ -1,8 +1,10 @@
 #pragma once
 
-#include <EASTL/functional.h>
+#include <Containers/Function.h>
+#include <Threading/DedicatedThread.h>
 
-void EnqueueToWorker(eastl::function<void(void)> WorkItem);
+DedicatedThreadData* GetWorkerDedicatedThreadData();
 
+Ticket EnqueueToWorker(const TFunction<void(void)>& WorkItem);
 void StartWorkerThreads();
 void StopWorkerThreads();

@@ -1,28 +1,73 @@
 #include "Threading/DedicatedThread.h"
+#include "Threading/Worker.h"
+#include "Containers/Map.h"
+#include "System/Thread.h"
+#include "Util/Util.h"
+#include <windows.h>
+#include <unordered_set>
+
+TracyLockable(Mutex, gTicketsLock);
+std::atomic<uint64_t> gCurrentTicketId;
+
+TracyLockable(Mutex, gTicketsWakeupLock);
+std::unordered_set<uint64_t> gDedicatedThreadData;
 
 namespace {
-	void DedicatedThreadProc(DedicatedThreadData *DedicatedThread)
+	bool ThreadShouldExit(DedicatedThreadData *DedicatedThread)
 	{
-		while (true)
-		{
-			std::unique_lock<LockableBase(Mutex)> Lock(DedicatedThread->ItemsLock);
-			DedicatedThread->WakeUp.wait(Lock, [DedicatedThread]() { return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.empty(); });
-			if (DedicatedThread->ThreadShouldStop)
-			{
-				return;
-			}
+		return DedicatedThread->ThreadShouldStop && DedicatedThread->WorkItems.empty();
+	}
 
-			eastl::function<void(void)> CurrentWorkItem = std::move(DedicatedThread->WorkItems.front());
-			DedicatedThread->WorkItems.pop();
-			Lock.unlock();
-			CurrentWorkItem();
+	void ExecuteItem(WorkItem& Item)
+	{
+		{
+			ZoneScopedN("Threaded work item");
+			Item.Work();
+		}
+		ScopedLock AutoLock(gTicketsLock);
+		gDedicatedThreadData.erase(Item.WorkDoneTicket.Value);
+	}
+
+	void PopAndExecute(DedicatedThreadData *DedicatedThread)
+	{
+		UniqueLock Lock(DedicatedThread->ItemsLock);
+		DedicatedThread->WakeUp.wait(Lock, [DedicatedThread]() { return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.empty(); });
+		if (ThreadShouldExit(DedicatedThread))
+		{
+			return;
+		}
+
+		WorkItem Item = MOVE(DedicatedThread->WorkItems.front());
+		DedicatedThread->WorkItems.pop();
+		Lock.unlock();
+		ExecuteItem(Item);
+	}
+
+	void DedicatedThreadProc(DedicatedThreadData *DedicatedThread, WString ThreadName)
+	{
+		SetThreadDescription(GetCurrentThread(), ThreadName.c_str());
+		while (!DedicatedThread->ThreadShouldStop)
+		{
+			PopAndExecute(DedicatedThread);
 		}
 	}
 }
 
-std::thread StartDedicatedThread(DedicatedThreadData* DedicatedThread)
+bool TryPopAndExecute(DedicatedThreadData* DedicatedThread)
 {
-	return std::thread(DedicatedThreadProc, DedicatedThread);
+	UniqueLock Lock(DedicatedThread->ItemsLock);
+	if (DedicatedThread->WorkItems.empty())
+		return false;
+	WorkItem Item = MOVE(DedicatedThread->WorkItems.front());
+	DedicatedThread->WorkItems.pop();
+	Lock.unlock();
+	ExecuteItem(Item);
+	return true;
+}
+
+std::thread StartDedicatedThread(DedicatedThreadData* DedicatedThread, WString ThreadName)
+{
+	return std::thread(DedicatedThreadProc, DedicatedThread, ThreadName);
 }
 
 void StopDedicatedThread(DedicatedThreadData* DedicatedThread)
@@ -31,11 +76,36 @@ void StopDedicatedThread(DedicatedThreadData* DedicatedThread)
 	DedicatedThread->WakeUp.notify_all();
 }
 
-void EnqueueWork(DedicatedThreadData *DedicatedThread, eastl::function<void(void)> Work)
+bool WorkIsDone(Ticket WorkDoneTicket)
+{
+	ScopedLock AutoLock(gTicketsLock);
+	return gDedicatedThreadData.find(WorkDoneTicket.Value) == gDedicatedThreadData.end();
+}
+
+void WaitForCompletion(Ticket WorkDoneTicket)
+{
+	while (!WorkIsDone(WorkDoneTicket))
+	{
+		//ZoneScoped;
+		if (!TryPopAndExecute(GetWorkerDedicatedThreadData()))
+		{
+			//ZoneScopedN("Sleep 1ms");
+			//Sleep(1);
+		}
+	}
+}
+
+Ticket EnqueueWork(DedicatedThreadData *DedicatedThread, const TFunction<void(void)>& Work)
 {
 	ZoneScoped;
-	std::lock_guard AutoLock(DedicatedThread->ItemsLock);
-	DedicatedThread->WorkItems.push(Work);
+	ScopedLock TicketAutoLock(gTicketsLock);
+	uint64_t TicketID = gCurrentTicketId.fetch_add(1);
+	{
+		ScopedLock ItemsAutoLock(DedicatedThread->ItemsLock);
+		DedicatedThread->WorkItems.push({ MOVE(Work), Ticket {TicketID} });
+	}
 	DedicatedThread->WakeUp.notify_one();
+	gDedicatedThreadData.emplace(TicketID);
+	return Ticket{ TicketID };
 }
 

@@ -1,19 +1,33 @@
 #pragma once
 
+#include "Containers/Function.h"
+#include "Containers/String.h"
 #include "Containers/Queue.h"
 #include "Threading/Mutex.h"
 #include <thread>
 #include <condition_variable>
 
-struct DedicatedThreadData
+struct Ticket { uint64_t Value; };
+
+struct WorkItem
 {
-	TracyLockable(Mutex, ItemsLock);
-	std::condition_variable_any WakeUp;
-	TQueue<eastl::function<void(void)>> WorkItems;
-	bool ThreadShouldStop = false;
+	TFunction<void(void)> Work;
+	Ticket                WorkDoneTicket;
 };
 
-std::thread StartDedicatedThread(DedicatedThreadData* DedicatedThread);
+struct DedicatedThreadData
+{
+	bool ThreadShouldStop = false;
+	TracyLockable(Mutex, ItemsLock);
+	std::condition_variable_any WakeUp;
+	TQueue<WorkItem> WorkItems;
+	String ThreadName;
+};
+
+std::thread StartDedicatedThread(DedicatedThreadData* DedicatedThread, WString ThreadName);
 void		StopDedicatedThread(DedicatedThreadData* DedicatedThread);
 
-void EnqueueWork(DedicatedThreadData* DedicatedThread, eastl::function<void(void)> Work);
+Ticket EnqueueWork(DedicatedThreadData* DedicatedThread, const TFunction<void(void)>& Work);
+bool   WorkIsDone(Ticket WorkDoneTicket);
+bool   TryPopAndExecute(DedicatedThreadData* DedicatedThread);
+void   WaitForCompletion(Ticket WorkDoneTicket);

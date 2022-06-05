@@ -1,3 +1,5 @@
+#include <dxgiformat.h>
+
 UINT BlockSizeFromFormat(DXGI_FORMAT Format)
 {
 	switch (Format)
