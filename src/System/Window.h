@@ -11,8 +11,6 @@
 #include <Tracy.hpp>
 #include <backends/imgui_impl_glfw.h>
 
-#define VALIDATE_GLFW_CALL(x) 
-
 namespace System
 {
 
@@ -38,7 +36,6 @@ public:
 
 		glfwInit();
 		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
 		mHandle = glfwCreateWindow(mSize.x, mSize.y, "pbrtrr", nullptr, nullptr);
 		CHECK(mHandle != nullptr, "GLFW failed to create a window.");
 

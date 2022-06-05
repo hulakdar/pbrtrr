@@ -6,13 +6,13 @@
 #include "Containers/String.h"
 #include "System/GUI.h"
 #include "System/Window.h"
-#include "System/Thread.h"
 #include "Render/Context.h"
 #include "Render/Texture.h"
 #include "Render/RenderDebug.h"
 #include "Render/CommandListPool.h"
 #include "Threading/Mutex.h"
 #include "Threading/Worker.h"
+#include "Threading/Thread.h"
 
 #include "external/stb/stb_image.h"
 
@@ -40,23 +40,38 @@ struct Camera
 	Vec2 Angles;
 };
 
+struct VertexDesc
+{
+	DXGI_FORMAT Format;
+	uint32_t	Offset;
+};
+
 struct MeshData
 {
 	ComPtr<ID3D12Resource>	VertexBuffer;
 	ComPtr<ID3D12Resource>	IndexBuffer;
+	TArray<VertexDesc>		VertexDeclaration;
 	uint32_t				VertexBufferSize = UINT_MAX;
 	uint32_t				IndexBufferSize = UINT_MAX;
 	uint32_t				VertexSize = UINT_MAX;
+	uint32_t				MaterialIndex = UINT_MAX;
 
 	Vec3 Offset{0};
 	Vec3 Scale{0};
 	bool b16BitIndeces = false;
 };
 
+struct TextureBindingInfo
+{
+	uint32_t Index;
+	bool Numbered;
+};
+
 struct Material
 {
 	String Name;
-	TArray<uint32_t> DiffuseTextures;
+	TArray<TextureBindingInfo> DiffuseTextures;
+	Vector4 DiffuseColor;
 };
 
 TextureData ParseTexture(aiTexture* Texture)
@@ -89,23 +104,31 @@ void AllocateMeshData(aiMesh* Mesh, MeshData& Result, bool PositionPacked)
 	ZoneScoped;
 	CHECK(Mesh->HasFaces(), "Mesh without faces?");
 
-	UINT VertexSize = sizeof(Vec4h);
+	UINT VertexSize = 0;
 	if (PositionPacked)
 	{
 		VertexSize = sizeof(Vec4PackUnorm);
+		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R10G10B10A2_UNORM, 0 });
+	}
+	else
+	{
+		VertexSize = sizeof(aiVector3D);
+		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R32G32B32_FLOAT, 0 });
 	}
 
-	//if (Mesh->HasNormals())
-	//{
-		//VertexSize += sizeof(Vec4h);
-	//}
+	if (Mesh->HasNormals())
+	{
+		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R16G16B16A16_FLOAT, VertexSize });
+		VertexSize += sizeof(aiVector3D);
+	}
 
-	//UINT VertexColors = 0;
-	//while (Mesh->HasVertexColors(VertexColors))
-	//{
-		//VertexSize += 4;
-		//VertexColors++;
-	//}
+	UINT VertexColors = 0;
+	while (Mesh->HasVertexColors(VertexColors))
+	{
+		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R8G8B8A8_UNORM, VertexSize });
+		VertexSize += 4;
+		VertexColors++;
+	}
 
 	UINT UVSets = 0;
 	while (Mesh->HasTextureCoords(UVSets))
@@ -167,25 +190,25 @@ void UploadMeshData(unsigned char* CpuPtr, aiMesh* Mesh, bool PositionPacked)
 			);
 		}
 
-		//if (Mesh->mNormals)
-		//{
-			//WriteAndAdvance(CpuPtr,
-				//Vec4h{
-					//half(Mesh->mNormals[i].x),
-					//half(Mesh->mNormals[i].y),
-					//half(Mesh->mNormals[i].z),
-					//1.f
-				//}
-			//);
-		//}
+		if (Mesh->mNormals)
+		{
+			WriteAndAdvance(CpuPtr,
+				Vec4h{
+					half(Mesh->mNormals[i].x),
+					half(Mesh->mNormals[i].y),
+					half(Mesh->mNormals[i].z),
+					1.f
+				}
+			);
+		}
 
-		//for (int j = 0; Mesh->mColors[j]; ++j)
-		//{
-			//WriteAndAdvance(CpuPtr, (uint8_t)(Mesh->mColors[j][i].r * 255.0f));
-			//WriteAndAdvance(CpuPtr, (uint8_t)(Mesh->mColors[j][i].g * 255.0f));
-			//WriteAndAdvance(CpuPtr, (uint8_t)(Mesh->mColors[j][i].b * 255.0f));
-			//WriteAndAdvance(CpuPtr, (uint8_t)(Mesh->mColors[j][i].a * 255.0f));
-		//}
+		for (int j = 0; Mesh->mColors[j]; ++j)
+		{
+			WriteAndAdvance(CpuPtr, (uint8_t)(Mesh->mColors[j][i].r * 255.0f));
+			WriteAndAdvance(CpuPtr, (uint8_t)(Mesh->mColors[j][i].g * 255.0f));
+			WriteAndAdvance(CpuPtr, (uint8_t)(Mesh->mColors[j][i].b * 255.0f));
+			WriteAndAdvance(CpuPtr, (uint8_t)(Mesh->mColors[j][i].a * 255.0f));
+		}
 
 		for (int j = 0; Mesh->mTextureCoords[j]; ++j)
 		{
@@ -239,6 +262,78 @@ public:
 TracyD3D12Ctx	gGraphicsProfilingCtx;
 TracyD3D12Ctx	gComputeProfilingCtx;
 TracyD3D12Ctx	gCopyProfilingCtx;
+uint32_t HashDeclaration(TArray<VertexDesc>& VertDeclarations)
+{
+	uint32_t hash = 5381;
+	
+	for (auto& Vert : VertDeclarations)
+	{
+		uint32_t c = (Vert.Format << 8) | Vert.Offset;
+		hash = (hash << 5) + hash + c;
+	}
+	return hash;
+};
+
+DXGI_FORMAT FormatFromFourCC(DWORD FourCC)
+{
+	if (FourCC == MAGIC(DXT1))
+	{
+		return DXGI_FORMAT_BC1_UNORM;
+	}
+	else if (FourCC == MAGIC(DXT3))
+	{
+		return DXGI_FORMAT_BC2_UNORM;
+	}
+	else if (FourCC == MAGIC(DXT5))
+	{
+		return DXGI_FORMAT_BC3_UNORM;
+	}
+	else if (FourCC == MAGIC(BC4U))
+	{
+		return DXGI_FORMAT_BC4_UNORM;
+	}
+	else if (FourCC == MAGIC(BC4S))
+	{
+		return DXGI_FORMAT_BC4_SNORM;
+	}
+	else if (FourCC == MAGIC(ATI2))
+	{
+		return DXGI_FORMAT_BC5_UNORM;
+	}
+	else if (FourCC == MAGIC(BC5S))
+	{
+		return DXGI_FORMAT_BC5_SNORM;
+	}
+	else if (FourCC == MAGIC(RGBG))
+	{
+		return DXGI_FORMAT_R8G8_B8G8_UNORM;
+	}
+	else if (FourCC == MAGIC(GRGB))
+	{
+		return DXGI_FORMAT_G8R8_G8B8_UNORM;
+	}
+	switch (FourCC)
+	{
+	case 36:
+		return DXGI_FORMAT_R16G16B16A16_UNORM;
+	case 110:
+		return DXGI_FORMAT_R16G16B16A16_SNORM;
+	case 111:
+		return DXGI_FORMAT_R16_FLOAT;
+	case 112:
+		return DXGI_FORMAT_R16G16_FLOAT;
+	case 113:
+		return DXGI_FORMAT_R16G16B16A16_FLOAT;
+	case 114:
+		return DXGI_FORMAT_R32_FLOAT;
+	case 115:
+		return DXGI_FORMAT_R32G32_FLOAT;
+	case 116:
+		return DXGI_FORMAT_R32G32B32A32_FLOAT;
+	default:
+		return DXGI_FORMAT_UNKNOWN;
+	}
+}
 
 int main(void)
 {
@@ -246,6 +341,7 @@ int main(void)
 
 	gMainThreadID = CurrentThreadID();
 	StartWorkerThreads();
+	stbi_set_flip_vertically_on_load(false);
 
 	System::Window Window;
 	Window.Init();
@@ -280,13 +376,18 @@ int main(void)
 	TArray<Mesh> Meshes;
 	TArray<Material> Materials;
 	TArray<MeshData> MeshDatas;
-	TArray<TextureData> Textures;
+	TArray<TextureData> NumberedTextures;
+	TArray<TextureData> LoadedTextures;
+
+	RenderContext& Context = GetRenderContext();
 
 	{
 #if 1
 		String FilePath = "content/DamagedHelmet.glb";
-#else
+#elif 1
 		String FilePath = "content/Bistro/BistroExterior.fbx";
+#else
+		String FilePath = "content/SunTemple/SunTemple.fbx";
 #endif
 		const aiScene* Scene = nullptr;
 		{
@@ -301,6 +402,7 @@ int main(void)
 			}
 			CHECK(Scene != nullptr, "Load failed");
 		}
+		StringView MeshFolder(FilePath.c_str(), FilePath.find_last_of("\\/"));
 
 		if (Scene->HasMaterials())
 		{
@@ -310,25 +412,40 @@ int main(void)
 				aiMaterial* MaterialPtr = Scene->mMaterials[i];
 				Material& Tmp = Materials[i];
 				Tmp.Name = String(MaterialPtr->GetName().C_Str());
-				for (UINT j = 0; j < MaterialPtr->GetTextureCount(aiTextureType_DIFFUSE); ++j)
+				//MaterialPtr->Get();
+
+				for (UINT j = 0, TextureCount = MaterialPtr->GetTextureCount(aiTextureType_DIFFUSE); j < TextureCount; ++j)
 				{
 					aiString TexPath;
-					MaterialPtr->GetTexture(aiTextureType_DIFFUSE, j, &TexPath);
-					if (TexPath.length && TexPath.data[0] == '*')
+					aiTextureMapping mapping = aiTextureMapping_UV;
+					unsigned int uvindex = 0;
+					ai_real blend = 0;
+					aiTextureOp op = aiTextureOp_Multiply;
+					aiTextureMapMode mapmode = aiTextureMapMode_Wrap;
+
+					MaterialPtr->GetTexture(aiTextureType_DIFFUSE, j, &TexPath, &mapping, &uvindex, &blend, &op, &mapmode);
+
+					CHECK(TexPath.length != 0, "");
+					CHECK(mapping == aiTextureMapping_UV, "");
+					CHECK(uvindex == 0, "");
+					CHECK(blend   == 0, "");
+					CHECK(op      == aiTextureOp_Multiply, "");
+					CHECK(mapmode == aiTextureMapMode_Wrap, "");
+
+					if (TexPath.data[0] == '*')
 					{
 						uint32_t Index = atoi(TexPath.C_Str() + 1);
-						Tmp.DiffuseTextures.push_back(Index);
+						Tmp.DiffuseTextures.push_back({ Index, true });
 					}
-					else if (TexPath.length)
+					else
 					{
-						StringView MeshFolder(FilePath.c_str(), FilePath.find_last_of("\\/"));
-
 						String Path(MeshFolder);
-						Path.append("/");
+						Path.append(1, '/');
 						Path.append(TexPath.data, TexPath.length);
 
-						Textures.emplace_back();
-						auto& Tex = Textures.back();
+						uint32_t Index = LoadedTextures.size();
+						LoadedTextures.emplace_back();
+						auto& Tex = LoadedTextures.back();
 
 						StringView Binary = LoadWholeFile(Path);
 						if (uint8_t* Data = (uint8_t*)Binary.data())
@@ -342,30 +459,13 @@ int main(void)
 								if (Header.ddspf.dwFourCC == MAGIC(DX10))
 								{
 									DDS_HEADER_DXT10 HeaderDX10 = ReadAndAdvance<DDS_HEADER_DXT10>(Data);
-								}
-								else if (Header.ddspf.dwFourCC == MAGIC(DXT1))
-								{
-									Tex.Format = DXGI_FORMAT_BC1_UNORM;
-								}
-								else if (Header.ddspf.dwFourCC == MAGIC(DXT3))
-								{
-									Tex.Format = DXGI_FORMAT_BC2_UNORM;
-								}
-								else if (Header.ddspf.dwFourCC == MAGIC(DXT5))
-								{
-									Tex.Format = DXGI_FORMAT_BC3_UNORM;
-								}
-								else if (Header.ddspf.dwFourCC == MAGIC(BC4U))
-								{
-									Tex.Format = DXGI_FORMAT_BC4_UNORM;
-								}
-								else if (Header.ddspf.dwFourCC == MAGIC(BC4S))
-								{
-									Tex.Format = DXGI_FORMAT_BC4_SNORM;
+									Tex.Format = HeaderDX10.dxgiFormat;
+									CHECK(HeaderDX10.resourceDimension == D3D10_RESOURCE_DIMENSION_TEXTURE2D, "Now only Tex2d supported");
+									CHECK(HeaderDX10.arraySize == 1, "Doesn't support tex arrays yet");
 								}
 								else
 								{
-									DEBUG_BREAK();
+									Tex.Format = FormatFromFourCC(Header.ddspf.dwFourCC);
 								}
 
 								Tex.Width = Header.dwWidth;
@@ -373,27 +473,29 @@ int main(void)
 								CreateTexture(Tex, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
 								UploadTextureData(Tex, Data, Header.dwPitchOrLinearSize);
 								CreateSRV(Tex);
+								CHECK(Tex.Format != DXGI_FORMAT_UNKNOWN, "Unknown format");
+
+								Tex.Size = IVector2{ (int)Header.dwWidth, (int)Header.dwHeight };
+								Tex.RawData = BinaryBlob(Data, Header.dwPitchOrLinearSize);
+								Context.CreateTexture(Tex);
+								Context.UploadTextureData(Tex);
+								Context.CreateSRV(Tex);
+							}
+							else
+							{
+								DEBUG_BREAK();
 							}
 						}
-						else
-						{
-							DEBUG_BREAK();
-						}
-					}
-					else
-					{
-						DEBUG_BREAK();
+						Tmp.DiffuseTextures.push_back({ Index, false });
 					}
 				}
 			}
 			if (Scene->HasTextures())
 			{
+				for (UINT i = 0; i < Scene->mNumTextures; ++i)
 				{
-					for (UINT i = 0; i < Scene->mNumTextures; ++i)
-					{
-						aiTexture* Texture = Scene->mTextures[i];
-						Textures.push_back(ParseTexture(Texture));
-					}
+					aiTexture* Texture = Scene->mTextures[i];
+					NumberedTextures.push_back(ParseTexture(Texture));
 				}
 			}
 		}
@@ -426,6 +528,7 @@ int main(void)
 
 					UploadOffsets[i] = UploadBufferSize;
 					UploadBufferSize += Tmp.IndexBufferSize + Tmp.VertexBufferSize;
+					Tmp.MaterialIndex = Mesh->mMaterialIndex;
 				}
 
 				UploadBuffer = CreateBuffer(UploadBufferSize, true);
@@ -486,7 +589,7 @@ int main(void)
 					}
 					else if (strcmp(Current->mName.C_Str(), "Camera") == 0)
 					{
-						aiVector3D Location, Scale, Rotation;
+						aiVector3D Scale, Rotation, Location;
 						CurrentTransform.Decompose(Scale, Rotation, Location);
 						MainCamera.Eye = Vec3{ Location.x, Location.y, Location.z };
 					}
@@ -501,7 +604,7 @@ int main(void)
 				PIXScopedEvent(WorkerCommandList.Get(), __LINE__, "Copy Mesh Data to GPU");
 				{
 					ZoneScopedN("Fill command list for upload")
-					for (UINT i = 0; i < Scene->mNumMeshes; ++i)
+					for (UINT i = 0; i < MeshDatas.size(); ++i)
 					{
 						MeshData& Data = MeshDatas[i];
 						WorkerCommandList->CopyBufferRegion(Data.VertexBuffer.Get(), 0, UploadBuffer.Get(), UploadOffsets[i], Data.VertexBufferSize);
@@ -541,36 +644,63 @@ int main(void)
 			FlushQueue(GetGraphicsQueue(), WorkerFrameFence.Get(), WorkerFenceValue, WorkerWaitEvent);
 			CloseHandle(WorkerWaitEvent);
 		}
+		Importer.FreeScene();
 	}
 
-	ComPtr<ID3D12PipelineState> SimplePSO;
+	TMap<uint32_t, ComPtr<ID3D12PipelineState>> MeshPSOs;
+	for (auto& Mesh : MeshDatas)
 	{
+		uint32_t Hash = HashDeclaration(Mesh.VertexDeclaration);
+		auto& Value = MeshPSOs[Hash];
+		if (Value)
+			continue;
+
 		TArray<D3D12_INPUT_ELEMENT_DESC> PSOLayout;
 
 		D3D12_INPUT_ELEMENT_DESC Tmp = {};
 
-		Tmp.SemanticName = "POSITION";
-		Tmp.SemanticIndex = 0;
-		Tmp.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
-		Tmp.InputSlot = 0;
-		Tmp.AlignedByteOffset = 0;
-		PSOLayout.push_back(Tmp);
-
-		Tmp.SemanticName = "TEXCOORD";
-		Tmp.SemanticIndex = 0;
-		Tmp.Format = DXGI_FORMAT_R16G16_FLOAT;
-		Tmp.InputSlot = 0;
-		Tmp.AlignedByteOffset = 4;
-		PSOLayout.push_back(Tmp);
+		uint32_t TexCoords = 0;
+		for (int i = 0; i < Mesh.VertexDeclaration.size(); ++i)
+		{
+			auto& Decl = Mesh.VertexDeclaration[i];
+			if (i == 0)
+			{
+				Tmp.SemanticName = "POSITION";
+				Tmp.SemanticIndex = 0;
+			}
+			else if (i == 1)
+			{
+				Tmp.SemanticName = "NORMAL";
+				Tmp.SemanticIndex = 0;
+			}
+			else
+			{
+				Tmp.SemanticName = "TEXCOORD";
+				Tmp.SemanticIndex = TexCoords++;
+			}
+			Tmp.Format = Decl.Format;
+			Tmp.InputSlot = 0;
+			Tmp.AlignedByteOffset = Decl.Offset;
+			PSOLayout.push_back(Tmp);
+		}
+		if (TexCoords == 0)
+		{
+			Tmp.SemanticName = "TEXCOORD";
+			Tmp.SemanticIndex = TexCoords++;
+			Tmp.Format = DXGI_FORMAT_R32G32_FLOAT;
+			Tmp.InputSlot = 0;
+			Tmp.AlignedByteOffset = 0;
+			PSOLayout.push_back(Tmp);
+		}
 
 		DXGI_FORMAT RenderTargetFormat = SCENE_COLOR_FORMAT;
 		TArray<StringView> EntryPoints = {"MainPS", "MainVS"};
-		SimplePSO = CreateShaderCombination(
+		Value = Context.CreateShaderCombination(
 			PSOLayout,
 			EntryPoints,
 			"content/shaders/Simple.hlsl",
 			&RenderTargetFormat,
-			DXGI_FORMAT_D24_UNORM_S8_UINT,
+			DEPTH_FORMAT,
 			nullptr
 		);
 	}
@@ -654,11 +784,13 @@ int main(void)
 	HANDLE WaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
 	ComPtr<ID3D12Fence> FrameFences[3] = {};
+	ComPtr<ID3D12GraphicsCommandList> CommandLists[3] = {};
 	for (int i = 0; i < 3; ++i)
 	{
 		FrameFences[i] = CreateFence();
 
 		SetD3DName(FrameFences[i], L"Fence %d", i);
+		SetD3DName(CommandLists[i], L"Command list %d", i);
 	}
 
 	std::atomic<bool> ReadbackInflight;
@@ -688,15 +820,15 @@ int main(void)
 	TextureData DepthBuffer;
 	{
 		D3D12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-			DXGI_FORMAT_D24_UNORM_S8_UINT,
+			RenderContext::DEPTH_FORMAT,
 			Window.mSize.x, Window.mSize.y,
 			1, 1, // ArraySize, MipLevels
 			1, 0, // SampleCount, SampleQuality
 			D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
 		);
 		D3D12_CLEAR_VALUE ClearValue = {};
-		ClearValue.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-		ClearValue.DepthStencil.Depth = 1.0f;
+		ClearValue.Format = RenderContext::DEPTH_FORMAT;
+		ClearValue.DepthStencil.Depth = 0.0f;
 
 		DepthBuffer.Format = TextureDesc.Format;
 		DepthBuffer.Width = Window.mSize.x;
@@ -837,6 +969,8 @@ int main(void)
 
 	uint64_t CurrentFenceValue = 0;
 	uint64_t FrameFenceValues[3] = {};
+
+	Context.FlushUpload();
 
 	std::atomic<UINT64> LastCompletedFence = 0;
 	std::atomic<uint64_t> QueuedFrameCount = 0;
@@ -1174,6 +1308,8 @@ int main(void)
 
 		// Mesh
 		{
+			ZoneScopedN("ImGui sliders");
+
 			ImGui::SliderFloat("FOV", &MainCamera.Fov, 5, 160);
 			ImGui::SliderFloat("Near", &MainCamera.Near, 0.01, 3);
 			ImGui::SliderFloat("Far", &MainCamera.Far, 10, 1000);
@@ -1252,10 +1388,20 @@ int main(void)
 								MeshData& MeshData = MeshDatas[ID];
 								Matrix4 Scale = CreateScaleMatrix(MeshData.Scale);
 								Matrix4 Translation = CreateTranslationMatrix(MeshData.Offset);
-
 								Matrix4 Combined = Scale * Translation * Mesh.Transform * VP;
-
 								CommandList->SetGraphicsRoot32BitConstants(1, sizeof(Combined)/4, &Combined, 0);
+
+								uint32_t MatIndex = MeshData.MaterialIndex;
+								const auto& Tex = Materials[MatIndex].DiffuseTextures[0];
+
+								if (Tex.Numbered)
+									Context.BindDescriptors(CommandList, NumberedTextures[Tex.Index]);
+								else
+									Context.BindDescriptors(CommandList, LoadedTextures[Tex.Index]);
+								CommandList->SetGraphicsRoot32BitConstants(1, 16, &Combined, 0);
+
+								uint32_t Hash = HashDeclaration(MeshData.VertexDeclaration);
+								CommandList->SetPipelineState(MeshPSOs[Hash].Get());
 
 								D3D12_VERTEX_BUFFER_VIEW VertexBufferView;
 								VertexBufferView.BufferLocation = MeshData.VertexBuffer->GetGPUVirtualAddress();
@@ -1291,6 +1437,7 @@ int main(void)
 				ZoneScopedN("SceneColor(render -> srv)");
 				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFenceValue);
 				{
+					ZoneScopedN("SceneColor barrier");
 					CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 						GetTextureResource(SceneColor.ID),
 						D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1331,8 +1478,10 @@ int main(void)
 			}
 		);
 
-		ImGui::EndFrame();
-		ImGui::Render();
+		{
+			ZoneScopedN("ImGui endframe work");
+			ImGui::Render();
+		}
 
 		ComPtr<ID3D12Resource>& ImGuiVertexBuffer = ImGuiVertexBuffers[CurrentBackBufferIndex];
 		ComPtr<ID3D12Resource>& ImGuiIndexBuffer = ImGuiIndexBuffers[CurrentBackBufferIndex];

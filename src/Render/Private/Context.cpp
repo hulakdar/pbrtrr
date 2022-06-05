@@ -84,7 +84,7 @@ namespace {
 			}
 		}
 	 
-		return allowTearing == TRUE;
+		return allowTearing;
 	}
 
 	ComPtr<IDXGIFactory4> CreateFactory()
@@ -497,9 +497,9 @@ void UploadTextureData(TextureData& TexData, const uint8_t *RawData, uint32_t Ra
 	ComPtr<ID3D12Resource> TextureUploadBuffer = CreateBuffer(UploadBufferSize, true);
 
 	D3D12_SUBRESOURCE_DATA SrcData = {};
-	SrcData.pData = RawData;
+	SrcData.pData = TexData.RawData.data();
 
-	if (RawDataSize == 0)
+	if (!IsBlockCompressedFormat(TexData.Format))
 	{
 		UINT Components = ComponentCountFromFormat((DXGI_FORMAT)TexData.Format);
 		SrcData.RowPitch = TexData.Width * Components;
@@ -723,7 +723,7 @@ ComPtr<ID3D12PipelineState> CreateShaderCombination(
 		PSODesc.DSVFormat = DepthTargetFormat;
 		PSODesc.DepthStencilState.DepthEnable = true;
 		PSODesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-		PSODesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+		PSODesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
 	}
 
 	PSODesc.pRootSignature = gRootSignature.Get();

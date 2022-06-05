@@ -56,7 +56,7 @@ namespace {
 
 Matrix4::Matrix4(float* Src)
 {
-	::memcpy(this, Src, sizeof(*this));
+	::memcpy(&m00, Src, sizeof(*this));
 }
 
 Vec4 Matrix4::Row(int Index)
@@ -69,12 +69,12 @@ Vec4 Matrix4::Row(int Index)
 Vec4 Matrix4::Column(int Index)
 {
 	CHECK(Index < 4, "");
-	float* Ptr = &m00;
+	const float* Ptr = &m00;
 	Ptr += Index;
 	return Vec4{ Ptr[0], Ptr[4], Ptr[8], Ptr[12]};
 }
 
-Matrix4& Matrix4::operator*=(Matrix4& Other)
+Matrix4& Matrix4::operator*=(const Matrix4& Other)
 {
 	*this = *this * Other;
 	return *this;
@@ -95,7 +95,7 @@ float Dot(const Vec4& A, const Vec4& B)
 	return A.x * B.x + A.y * B.y + A.z * B.z + A.w * B.w;
 }
 
-Matrix4 operator*(Matrix4& A, Matrix4& B)
+Matrix4 operator*(const Matrix4& A, const Matrix4& B)
 {
 	float Result[16];
 	for (int i = 0; i < 4; ++i)
@@ -106,15 +106,15 @@ Matrix4 operator*(Matrix4& A, Matrix4& B)
 	return Matrix4(Result);
 }
 
-Matrix4 CreatePerspectiveMatrix(float FovInRadians, float AspectRatio, float Near, float Far)
+Matrix4 CreatePerspectiveMatrixClassic(float FovInRadians, float AspectRatio, float Near, float Far)
 {
-	float Scale = 1 / tan(FovInRadians / 2);
+	float Scale = 1.f / tan(FovInRadians / 2);
 	float Extent = Far-Near;
 	float Result[] = {
-		Scale, 0,     0,               0,
-		0,     Scale, 0,               0,
-		0,     0,    -Far/Extent,     -1,
-		0,     0,    -Far*Near/Extent, 0,
+		Scale/AspectRatio, 0,     0,               0,
+		0,                 Scale, 0,               0,
+		0,                 0,    -Far/Extent,     -1,
+		0,                 0,    -Far*Near/Extent, 0,
 	};
 	return Matrix4(Result);
 }
@@ -162,6 +162,30 @@ Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 PolarAngles)
 		Translation.x, Translation.y, Translation.z, 1,
 	};
 	return Matrix4(T)*Matrix4(R);
+}
+
+Matrix4 CreateViewMatrix(Vector3 Translation, Vector2 YawPitch)
+{
+	float Yaw[] = {
+		cosf(YawPitch.x),  0, sinf(YawPitch.x), 0,
+		0,                 1, 0,                0,
+		-sinf(YawPitch.x), 0, cosf(YawPitch.x), 0,
+		0,                 0, 0,                1,
+	};
+	float Pitch[] = {
+		1, 0,                 0,                0,
+		0, cosf(YawPitch.y), -sinf(YawPitch.y), 0,
+		0, sinf(YawPitch.y),  cosf(YawPitch.y), 0,
+		0, 0,                 0,                1,
+	};
+	float Translate[] = {
+		1, 0, 0, 0,
+		0, 1, 0, 0,
+		0, 0, 1, 0,
+		Translation.x, Translation.y, Translation.z, 1,
+	};
+
+	return Matrix4(Translate) * Matrix4(Yaw) * Matrix4(Pitch);
 }
 
 float RadiansToDegrees(float Radians)

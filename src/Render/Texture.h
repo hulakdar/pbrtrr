@@ -84,5 +84,3 @@ struct DDS_HEADER_DXT10
   uint32_t               miscFlags2;
 };
 
-
-

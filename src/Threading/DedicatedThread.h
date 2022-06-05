@@ -4,6 +4,7 @@
 #include "Containers/String.h"
 #include "Containers/Queue.h"
 #include "Threading/Mutex.h"
+#include "Thread.h"
 #include <thread>
 #include <condition_variable>
 
@@ -24,8 +25,8 @@ struct DedicatedThreadData
 	String ThreadName;
 };
 
-std::thread StartDedicatedThread(DedicatedThreadData* DedicatedThread, WString ThreadName);
-void		StopDedicatedThread(DedicatedThreadData* DedicatedThread);
+Thread StartDedicatedThread(DedicatedThreadData* DedicatedThread, WString ThreadName);
+void StopDedicatedThread(DedicatedThreadData* DedicatedThread);
 
 Ticket EnqueueWork(DedicatedThreadData* DedicatedThread, const TFunction<void(void)>& Work);
 bool   WorkIsDone(Ticket WorkDoneTicket);

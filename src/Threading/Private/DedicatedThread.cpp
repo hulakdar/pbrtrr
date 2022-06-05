@@ -65,9 +65,9 @@ bool TryPopAndExecute(DedicatedThreadData* DedicatedThread)
 	return true;
 }
 
-std::thread StartDedicatedThread(DedicatedThreadData* DedicatedThread, WString ThreadName)
+Thread StartDedicatedThread(DedicatedThreadData* DedicatedThread, WString ThreadName)
 {
-	return std::thread(DedicatedThreadProc, DedicatedThread, ThreadName);
+	return Thread(DedicatedThreadProc, DedicatedThread, ThreadName);
 }
 
 void StopDedicatedThread(DedicatedThreadData* DedicatedThread)

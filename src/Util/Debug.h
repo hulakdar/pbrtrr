@@ -12,7 +12,7 @@
 # define CHECK(x, msg) \
 		if (!(x)) \
 		{ \
-			Debug::Print(msg); \
+			Debug::Print("Assertion failed: '", #x, "'. ",msg); \
 			DEBUG_BREAK(); \
 		}
 

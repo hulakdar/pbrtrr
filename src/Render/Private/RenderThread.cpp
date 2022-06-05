@@ -3,8 +3,8 @@
 #include "Util/Util.h"
 #include "..\RenderThread.h"
 
-DedicatedThreadData gRenderDedicatedThreadData;
-std::thread gRenderDedicatedThread;
+DedicatedThreadData	gRenderDedicatedThreadData;
+Thread				gRenderDedicatedThread;
 
 void StartRenderThread()
 {

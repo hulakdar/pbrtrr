@@ -1,6 +1,7 @@
 #include <Tracy.hpp>
 #include <stdint.h>
 #include <fstream>
+#include "Threading/Mutex.h"
 #include "Containers/String.h"
 #include "Containers/Map.h"
 #include "Util/Util.h"
@@ -8,15 +9,19 @@
 
 namespace {
 	TMap<const char*, String> FileCache;
+	RWLock FileCacheLock;
 }
 
 StringView LoadWholeFile(StringView Path)
 {
 	ZoneScoped;
-	auto CachedValue = FileCache.find(Path.data());
-	if (CachedValue != FileCache.end())
 	{
-		return CachedValue->second;
+		ReadLock Lock(FileCacheLock);
+		auto CachedValue = FileCache.find(Path.data());
+		if (CachedValue != FileCache.end())
+		{
+			return CachedValue->second;
+		}
 	}
 
 	std::ifstream infile(Path.data(),std::ios::binary);
@@ -32,6 +37,7 @@ StringView LoadWholeFile(StringView Path)
 	infile.seekg(0, std::ios::beg);
 	infile.read(&data[0], file_size_in_byte);
 
+	WriteLock Lock(FileCacheLock);
 	return FileCache[Path.data()] = MOVE(data);
 }
 
