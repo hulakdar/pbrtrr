@@ -1,6 +1,4 @@
-[submodule "thirdparty/imnodes"]
-	path = thirdparty/imnodes
-	url = https://github.com/Nelarius/imnodes.git
-[submodule "thirdparty/imgui"]
-	path = thirdparty/imgui
-	url = https://github.com/ocornut/imgui.git
+[submodule "thirdparty/tracy"]
+	path = thirdparty/tracy
+	url = https://github.com/wolfpld/tracy.git
+	branch = master
