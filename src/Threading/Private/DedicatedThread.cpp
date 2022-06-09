@@ -1,7 +1,7 @@
 #include "Threading/DedicatedThread.h"
 #include "Threading/Worker.h"
 #include "Containers/Map.h"
-#include "System/Thread.h"
+#include "Threading/Thread.h"
 #include "Util/Util.h"
 #include <windows.h>
 #include <unordered_set>

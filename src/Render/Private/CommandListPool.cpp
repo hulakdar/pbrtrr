@@ -7,6 +7,8 @@
 #include "Threading/Mutex.h"
 #include "Util/Util.h"
 
+#include <d3d12.h>
+
 TQueue<ComPtr<ID3D12GraphicsCommandList>> gCommandLists[4];
 TracyLockable(Mutex, gCommandListLock);
 

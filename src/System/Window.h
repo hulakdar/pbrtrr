@@ -93,8 +93,6 @@ public:
 	HWND				mHwnd = nullptr;
 	GLFWwindow			*mHandle = nullptr;
 
-	TArray<String>		mDroppedPaths;
-
 private:
 	void UpdateInput()
 	{

@@ -54,28 +54,19 @@ namespace {
 	}
 }
 
-Matrix4::Matrix4()
-{
-	memset(&m00, 0, sizeof(m00) * 16);
-	m00 = 1.f;
-	m11 = 1.f;
-	m22 = 1.f;
-	m33 = 1.f;
-}
-
 Matrix4::Matrix4(float* Src)
 {
 	::memcpy(&m00, Src, sizeof(*this));
 }
 
-Vec4 Matrix4::Row(int Index)
+Vec4 Matrix4::Row(int Index) const
 {
 	CHECK(Index < 4, "");
 	Vec4* Ptr = (Vec4*)&m00;
 	return Ptr[Index];
 }
 
-Vec4 Matrix4::Column(int Index)
+Vec4 Matrix4::Column(int Index) const
 {
 	CHECK(Index < 4, "");
 	const float* Ptr = &m00;
@@ -128,6 +119,18 @@ Matrix4 CreatePerspectiveMatrixClassic(float FovInRadians, float AspectRatio, fl
 	return Matrix4(Result);
 }
 
+Matrix4 CreatePerspectiveMatrixReverseZ(float FovInRadians, float AspectRatio, float Near)
+{
+	float Scale = 1.f / tan(FovInRadians / 2);
+	float Result[] = {
+		Scale / AspectRatio, 0.0f,  0.0f,  0.0f,
+		0.0f,                Scale, 0.0f,  0.0f,
+		0.0f,                0.0f,  0.0f, -1.0f,
+		0.0f,                0.0f,  Near,  0.0f
+	};
+	return Matrix4(Result);
+}
+
 Matrix4 CreateTranslationMatrix(Vec3 Translation)
 {
 	float Result[] = {
@@ -173,29 +176,29 @@ Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 PolarAngles)
 	return Matrix4(T)*Matrix4(R);
 }
 
-Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 YawPitch)
-{
-	float Yaw[] = {
-		cosf(YawPitch.x),  0, sinf(YawPitch.x), 0,
-		0,                 1, 0,                0,
-		-sinf(YawPitch.x), 0, cosf(YawPitch.x), 0,
-		0,                 0, 0,                1,
-	};
-	float Pitch[] = {
-		1, 0,                 0,                0,
-		0, cosf(YawPitch.y), -sinf(YawPitch.y), 0,
-		0, sinf(YawPitch.y),  cosf(YawPitch.y), 0,
-		0, 0,                 0,                1,
-	};
-	float Translate[] = {
-		1, 0, 0, 0,
-		0, 1, 0, 0,
-		0, 0, 1, 0,
-		Translation.x, Translation.y, Translation.z, 1,
-	};
-
-	return Matrix4(Translate) * Matrix4(Yaw) * Matrix4(Pitch);
-}
+//Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 YawPitch)
+//{
+//	float Yaw[] = {
+//		cosf(YawPitch.x),  0, sinf(YawPitch.x), 0,
+//		0,                 1, 0,                0,
+//		-sinf(YawPitch.x), 0, cosf(YawPitch.x), 0,
+//		0,                 0, 0,                1,
+//	};
+//	float Pitch[] = {
+//		1, 0,                 0,                0,
+//		0, cosf(YawPitch.y), -sinf(YawPitch.y), 0,
+//		0, sinf(YawPitch.y),  cosf(YawPitch.y), 0,
+//		0, 0,                 0,                1,
+//	};
+//	float Translate[] = {
+//		1, 0, 0, 0,
+//		0, 1, 0, 0,
+//		0, 0, 1, 0,
+//		Translation.x, Translation.y, Translation.z, 1,
+//	};
+//
+//	return Matrix4(Translate) * Matrix4(Yaw) * Matrix4(Pitch);
+//}
 
 float RadiansToDegrees(float Radians)
 {
@@ -259,8 +262,8 @@ Vec4PackUnorm::Vec4PackUnorm(float Xin)
 {
 	CHECK(Xin >= 0.f && Xin <= 1.f, "This format can only hold normalized values")
 
-	x = y = Xin * Max10bit;
-	z = Xin * Max10bit;
+	x = y = uint32_t(Xin * Max10bit);
+	z = uint32_t(Xin * Max10bit);
 	w = 0;
 }
 
@@ -271,10 +274,10 @@ Vec4PackUnorm::Vec4PackUnorm(float* p)
 	CHECK(p[2] >= 0.f && p[2] <= 1.f, "This format can only hold normalized values")
 	CHECK(p[3] >= 0.f && p[3] <= 1.f, "This format can only hold normalized values")
 
-	x = p[0] * Max10bit;
-	y = p[1] * Max10bit;
-	z = p[2] * Max10bit;
-	w = p[3] * Max2bit;
+	x = uint32_t(p[0] * Max10bit);
+	y = uint32_t(p[1] * Max10bit);
+	z = uint32_t(p[2] * Max10bit);
+	w = uint32_t(p[3] * Max2bit);
 }
 
 Vec4PackUnorm::Vec4PackUnorm(float Xin, float Yin, float Zin, float Win)
@@ -283,10 +286,10 @@ Vec4PackUnorm::Vec4PackUnorm(float Xin, float Yin, float Zin, float Win)
 	CHECK(Yin >= 0.f && Yin <= 1.f, "This format can only hold normalized values")
 	CHECK(Zin >= 0.f && Zin <= 1.f, "This format can only hold normalized values")
 
-	x = Xin * Max10bit;
-	y = Yin * Max10bit;
-	z = Zin * Max10bit;
-	w = Win * Max2bit;
+	x = uint32_t(Xin * Max10bit);
+	y = uint32_t(Yin * Max10bit);
+	z = uint32_t(Zin * Max10bit);
+	w = uint32_t(Win * Max2bit);
 }
 
 Matrix4Half::Matrix4Half(const Matrix4& Matrix)

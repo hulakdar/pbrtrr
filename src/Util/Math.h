@@ -63,9 +63,9 @@ struct Matrix4
 {
 	Matrix4() = default;
 	Matrix4(float*);
-	Vec4 Row(int Index);
-	Vec4 Column(int Index);
-	Matrix4& operator*=(Matrix4& Other);
+	Vec4 Row(int Index) const;
+	Vec4 Column(int Index) const;
+	Matrix4& operator*=(const Matrix4& Other);
 
 	float	m00 = 1.f, m01 = 0.f, m02 = 0.f, m03 = 0.f,
 			m10 = 0.f, m11 = 1.f, m12 = 0.f, m13 = 0.f,
@@ -85,13 +85,14 @@ struct Matrix4Half
 			m30 = 0.f, m31 = 0.f, m32 = 0.f, m33 = 1.f;
 };
 
-Matrix4 operator*(Matrix4& A, Matrix4&B);
+Matrix4 operator*(const Matrix4& A, const Matrix4&B);
 
 Matrix4 CreateScaleMatrix(Vec3 Scale);
 Matrix4 CreateTranslationMatrix(Vec3 Translation);
-
 Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 PolarAngles);
-Matrix4 CreatePerspectiveMatrix(float FovInRadians, float AspectRatio, float Near, float Far);
+
+Matrix4 CreatePerspectiveMatrixClassic(float FovInRadians, float AspectRatio, float Near, float Far);
+Matrix4 CreatePerspectiveMatrixReverseZ(float FovInRadians, float AspectRatio, float Near);
 
 using UVec2 = TVec2<unsigned>;
 using IVec2 = TVec2<int>;

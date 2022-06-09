@@ -1,9 +1,6 @@
 #pragma once
 #include <EASTL/internal/move_help.h>
 #include "Containers/String.h"
-#include "Containers/Array.h"
-#include "Containers/ComPtr.h"
-#include "external/d3dx12.h"
 
 #define MOVE(x) EASTL_MOVE_INLINE(x)
 

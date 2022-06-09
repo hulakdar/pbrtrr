@@ -5,7 +5,7 @@
 void System::Callbacks::Error(int error, const char* description)
 {
 	Debug::Print(error, ": ", description);
-	DEBUG_BREAK();
+	//DEBUG_BREAK();
 }
 
 void System::Callbacks::WindowSize(GLFWwindow* window, int width, int height)
@@ -45,7 +45,7 @@ void System::Callbacks::Drop(GLFWwindow* window, int path_count, const char* pat
 
 	for (int i = 0; i < path_count; ++i)
 	{
-		WindowPtr->mDroppedPaths.emplace_back(paths[i]);
+		//WindowPtr->mDroppedPaths.emplace_back(paths[i]);
 	}
 }
 

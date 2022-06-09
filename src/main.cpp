@@ -4,6 +4,7 @@
 #include "Containers/Queue.h"
 #include "Containers/ComPtr.h"
 #include "Containers/String.h"
+#include "Containers/Map.h"
 #include "System/GUI.h"
 #include "System/Window.h"
 #include "Render/Context.h"
@@ -44,6 +45,7 @@ struct VertexDesc
 {
 	DXGI_FORMAT Format;
 	uint32_t	Offset;
+	const char* Semantic;
 };
 
 struct MeshData
@@ -75,7 +77,7 @@ struct Material
 {
 	String Name;
 	TArray<TextureBindingInfo> DiffuseTextures;
-	Vector4 DiffuseColor;
+	Vec4 DiffuseColor;
 };
 
 TextureData ParseTexture(aiTexture* Texture)
@@ -111,25 +113,25 @@ void AllocateMeshData(aiMesh* Mesh, MeshData& Result, bool PositionPacked)
 	UINT VertexSize = 0;
 	if (PositionPacked)
 	{
-		VertexSize = sizeof(Vec4PackUnorm);
-		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R10G10B10A2_UNORM, 0 });
+		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R10G10B10A2_UNORM, VertexSize, "POSITION"});
+		VertexSize += sizeof(Vec4PackUnorm);
 	}
 	else
 	{
-		VertexSize = sizeof(aiVector3D);
-		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R32G32B32_FLOAT, 0 });
+		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R32G32B32_FLOAT, VertexSize, "POSITION" });
+		VertexSize += sizeof(aiVector3D);
 	}
 
 	if (Mesh->HasNormals())
 	{
-		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R16G16B16A16_FLOAT, VertexSize });
-		VertexSize += sizeof(aiVector3D);
+		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R16G16B16A16_FLOAT, VertexSize, "NORMAL" });
+		VertexSize += sizeof(Vec4h);
 	}
 
 	UINT VertexColors = 0;
 	while (Mesh->HasVertexColors(VertexColors))
 	{
-		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R8G8B8A8_UNORM, VertexSize });
+		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R8G8B8A8_UNORM, VertexSize, "COLOR" });
 		VertexSize += 4;
 		VertexColors++;
 	}
@@ -137,6 +139,7 @@ void AllocateMeshData(aiMesh* Mesh, MeshData& Result, bool PositionPacked)
 	UINT UVSets = 0;
 	while (Mesh->HasTextureCoords(UVSets))
 	{
+		Result.VertexDeclaration.push_back(VertexDesc{ DXGI_FORMAT_R16G16_FLOAT, VertexSize, "TEXCOORD" });
 		VertexSize += sizeof(half) * 2;
 		UVSets++;
 	}
@@ -263,9 +266,6 @@ public:
 
 #include <assimp/version.h>
 
-TracyD3D12Ctx	gGraphicsProfilingCtx;
-TracyD3D12Ctx	gComputeProfilingCtx;
-TracyD3D12Ctx	gCopyProfilingCtx;
 uint32_t HashDeclaration(TArray<VertexDesc>& VertDeclarations)
 {
 	uint32_t hash = 5381;
@@ -386,8 +386,6 @@ int main(void)
 	TArray<TextureData> NumberedTextures;
 	TArray<TextureData> LoadedTextures;
 
-	RenderContext& Context = GetRenderContext();
-
 	{
 #if 1
 		String FilePath = "content/DamagedHelmet.glb";
@@ -403,10 +401,6 @@ int main(void)
 				FilePath.c_str(),
 				aiProcess_GenBoundingBoxes | aiProcess_FlipWindingOrder | aiProcessPreset_TargetRealtime_Quality
 			);
-			if (Helper.ShouldProceed == false)
-			{
-				return 0;
-			}
 			CHECK(Scene != nullptr, "Load failed");
 		}
 		StringView MeshFolder(FilePath.c_str(), FilePath.find_last_of("\\/"));
@@ -433,11 +427,11 @@ int main(void)
 					MaterialPtr->GetTexture(aiTextureType_DIFFUSE, j, &TexPath, &mapping, &uvindex, &blend, &op, &mapmode);
 
 					CHECK(TexPath.length != 0, "");
+					CHECK(mapmode == aiTextureMapMode_Wrap, "");
+					CHECK(op      == aiTextureOp_Multiply, "");
 					CHECK(mapping == aiTextureMapping_UV, "");
 					CHECK(uvindex == 0, "");
 					CHECK(blend   == 0, "");
-					CHECK(op      == aiTextureOp_Multiply, "");
-					CHECK(mapmode == aiTextureMapMode_Wrap, "");
 
 					if (TexPath.data[0] == '*')
 					{
@@ -450,22 +444,22 @@ int main(void)
 						Path.append(1, '/');
 						Path.append(TexPath.data, TexPath.length);
 
-						uint32_t Index = LoadedTextures.size();
+						uint32_t Index = uint32_t(LoadedTextures.size());
 						LoadedTextures.emplace_back();
 						auto& Tex = LoadedTextures.back();
 
 						StringView Binary = LoadWholeFile(Path);
 						if (uint8_t* Data = (uint8_t*)Binary.data())
 						{
-							UINT Magic = ReadAndAdvance<UINT>(Data);
+							auto Magic = ReadAndAdvance<UINT>(Data);
 							CHECK(Magic == DDS_MAGIC, "This is not a valid DDS");
 
-							DDS_HEADER Header = ReadAndAdvance<DDS_HEADER>(Data);
+							auto Header = ReadAndAdvance<DDS_HEADER>(Data);
 							if (Header.ddspf.dwFlags & DDPF_FOURCC)
 							{
 								if (Header.ddspf.dwFourCC == MAGIC(DX10))
 								{
-									DDS_HEADER_DXT10 HeaderDX10 = ReadAndAdvance<DDS_HEADER_DXT10>(Data);
+									auto HeaderDX10 = ReadAndAdvance<DDS_HEADER_DXT10>(Data);
 									Tex.Format = HeaderDX10.dxgiFormat;
 									CHECK(HeaderDX10.resourceDimension == D3D10_RESOURCE_DIMENSION_TEXTURE2D, "Now only Tex2d supported");
 									CHECK(HeaderDX10.arraySize == 1, "Doesn't support tex arrays yet");
@@ -481,12 +475,6 @@ int main(void)
 								UploadTextureData(Tex, Data, Header.dwPitchOrLinearSize);
 								CreateSRV(Tex);
 								CHECK(Tex.Format != DXGI_FORMAT_UNKNOWN, "Unknown format");
-
-								Tex.Width = Header.dwWidth;
-								Tex.Height = Header.dwHeight;
-								CreateTexture(Tex, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
-								UploadTextureData(Tex, Data, Header.dwPitchOrLinearSize);
-								CreateSRV(Tex);
 							}
 						}
 						Tmp.DiffuseTextures.push_back({ Index, false });
@@ -659,40 +647,13 @@ int main(void)
 			continue;
 
 		TArray<D3D12_INPUT_ELEMENT_DESC> PSOLayout;
-
 		D3D12_INPUT_ELEMENT_DESC Tmp = {};
-
-		uint32_t TexCoords = 0;
 		for (int i = 0; i < Mesh.VertexDeclaration.size(); ++i)
 		{
 			auto& Decl = Mesh.VertexDeclaration[i];
-			if (i == 0)
-			{
-				Tmp.SemanticName = "POSITION";
-				Tmp.SemanticIndex = 0;
-			}
-			else if (i == 1)
-			{
-				Tmp.SemanticName = "NORMAL";
-				Tmp.SemanticIndex = 0;
-			}
-			else
-			{
-				Tmp.SemanticName = "TEXCOORD";
-				Tmp.SemanticIndex = TexCoords++;
-			}
+			Tmp.SemanticName = Decl.Semantic;
 			Tmp.Format = Decl.Format;
-			Tmp.InputSlot = 0;
 			Tmp.AlignedByteOffset = Decl.Offset;
-			PSOLayout.push_back(Tmp);
-		}
-		if (TexCoords == 0)
-		{
-			Tmp.SemanticName = "TEXCOORD";
-			Tmp.SemanticIndex = TexCoords++;
-			Tmp.Format = DXGI_FORMAT_R32G32_FLOAT;
-			Tmp.InputSlot = 0;
-			Tmp.AlignedByteOffset = 0;
 			PSOLayout.push_back(Tmp);
 		}
 
@@ -787,13 +748,11 @@ int main(void)
 	HANDLE WaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
 	ComPtr<ID3D12Fence> FrameFences[3] = {};
-	ComPtr<ID3D12GraphicsCommandList> CommandLists[3] = {};
 	for (int i = 0; i < 3; ++i)
 	{
 		FrameFences[i] = CreateFence();
 
 		SetD3DName(FrameFences[i], L"Fence %d", i);
-		SetD3DName(CommandLists[i], L"Command list %d", i);
 	}
 
 	std::atomic<bool> ReadbackInflight;
@@ -823,14 +782,14 @@ int main(void)
 	TextureData DepthBuffer;
 	{
 		D3D12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-			RenderContext::DEPTH_FORMAT,
+			DEPTH_FORMAT,
 			Window.mSize.x, Window.mSize.y,
 			1, 1, // ArraySize, MipLevels
 			1, 0, // SampleCount, SampleQuality
 			D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
 		);
 		D3D12_CLEAR_VALUE ClearValue = {};
-		ClearValue.Format = RenderContext::DEPTH_FORMAT;
+		ClearValue.Format = DEPTH_FORMAT;
 		ClearValue.DepthStencil.Depth = 0.0f;
 
 		DepthBuffer.Format = TextureDesc.Format;
@@ -1017,8 +976,6 @@ int main(void)
 					x = SceneColorSmall.Width, y = SceneColorSmall.Height
 				]
 				() {
-					ComPtr<ID3D12Resource>;
-
 					UINT   RowCount;
 					UINT64 RowPitch;
 					UINT64 ResourceSize;
@@ -1301,7 +1258,7 @@ int main(void)
 						FLOAT clearColor[] = { 0.4f, 0.6f, 0.9f, 1.0f };
 						ClearRenderTarget(CommandList.Get(), SceneColor.RTV, clearColor);
 					}
-					ClearDepth(CommandList.Get(), DepthBuffer.DSV, 1.0f);
+					ClearDepth(CommandList.Get(), DepthBuffer.DSV, 0.0f);
 				}
 				Submit(CommandList, CurrentFenceValue);
 			}
@@ -1346,12 +1303,15 @@ int main(void)
 				[
 					MainCamera,
 					&DefaultTexture,
-					&SimplePSO,
 					&SceneColor,
 					&DepthBuffer,
 					&Window,
+					&Materials,
 					&Meshes,
+					&MeshPSOs,
 					&MeshDatas,
+					&NumberedTextures,
+					&LoadedTextures,
 					&CurrentFenceValue
 				]()
 				{
@@ -1376,10 +1336,9 @@ int main(void)
 						CommandList->RSSetViewports(1, &SceneColorViewport);
 						CommandList->RSSetScissorRects(1, &SceneColorScissor);
 
-						CommandList->SetPipelineState(SimplePSO.Get());
 						CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-						Matrix4 Projection = CreatePerspectiveMatrix(DegreesToRadians(Fov), (float)Window.mSize.x / (float)Window.mSize.y, Near, Far);
-						Matrix4 View = CreateViewMatrix(-Eye, Angles);
+						Matrix4 Projection = CreatePerspectiveMatrixReverseZ(DegreesToRadians(Fov), (float)Window.mSize.x / (float)Window.mSize.y, Near);
+						Matrix4 View = CreateViewMatrix(Eye, Angles);
 						Matrix4 VP = View * Projection;
 
 						for (auto& Mesh : Meshes)
@@ -1392,13 +1351,14 @@ int main(void)
 								Matrix4 Combined = Scale * Translation * Mesh.Transform * VP;
 								CommandList->SetGraphicsRoot32BitConstants(1, sizeof(Combined)/4, &Combined, 0);
 
-								uint32_t MatIndex = MeshData.MaterialIndex;
-								const auto& Tex = Materials[MatIndex].DiffuseTextures[0];
+								//uint32_t MatIndex = MeshData.MaterialIndex;
+								//const auto& Tex = Materials[MatIndex].DiffuseTextures[0];
 
-								if (Tex.Numbered)
-									Context.BindDescriptors(CommandList, NumberedTextures[Tex.Index]);
-								else
-									Context.BindDescriptors(CommandList, LoadedTextures[Tex.Index]);
+								//if (Tex.Numbered)
+									//BindDescriptors(CommandList.Get(), NumberedTextures[Tex.Index]);
+								//else
+									//BindDescriptors(CommandList.Get(), LoadedTextures[Tex.Index]);
+								BindDescriptors(CommandList.Get(), DefaultTexture);
 								CommandList->SetGraphicsRoot32BitConstants(1, 16, &Combined, 0);
 
 								uint32_t Hash = HashDeclaration(MeshData.VertexDeclaration);
@@ -1466,7 +1426,7 @@ int main(void)
 					IndexBufferView.Format = DXGI_FORMAT_R16_UINT;
 					CommandList->IASetIndexBuffer(&IndexBufferView);
 
-					BindRenderTargets(CommandList.Get(), {CurrentBackBufferIndex}, -1);
+					BindRenderTargets(CommandList.Get(), {CurrentBackBufferIndex}, (uint32_t)-1);
 
 					CD3DX12_VIEWPORT	Viewport    = CD3DX12_VIEWPORT(0.f, 0.f, (float)Window.mSize.x, (float)Window.mSize.y);
 					CD3DX12_RECT		ScissorRect = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
@@ -1563,7 +1523,7 @@ int main(void)
 					BindDescriptors(CommandList.Get(), GetGUIFont());
 
 					TextureData& RenderTarget = GetBackBuffer(CurrentBackBufferIndex);
-					BindRenderTargets(CommandList.Get(), { RenderTarget.RTV }, -1);
+					BindRenderTargets(CommandList.Get(), { RenderTarget.RTV }, (uint32_t)-1);
 					CommandList->SetPipelineState(GuiPSO.Get());
 					CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
