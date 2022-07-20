@@ -28,38 +28,13 @@ namespace Callbacks
 class Window
 {
 public:
-	void Init()
-	{
-		ZoneScoped;
-
-		glfwSetErrorCallback(&Callbacks::Error);
-
-		glfwInit();
-		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		mHandle = glfwCreateWindow(mSize.x, mSize.y, "pbrtrr", nullptr, nullptr);
-		CHECK(mHandle != nullptr, "GLFW failed to create a window.");
-
-		mHwnd = glfwGetWin32Window(mHandle);
-		CHECK(mHwnd != nullptr, "Couldn't get HWND from GLFW window.");
-
-		glfwSetWindowUserPointer(mHandle, this);
-		glfwSetWindowSizeCallback(mHandle, &Callbacks::WindowSize);
-		glfwSetScrollCallback(mHandle, &Callbacks::Scroll);
-		glfwSetKeyCallback(mHandle, &Callbacks::Key);
-		glfwSetCharCallback(mHandle, &Callbacks::Char);
-		glfwSetDropCallback(mHandle, &Callbacks::Drop);
-		glfwSetMouseButtonCallback(mHandle, &Callbacks::MouseButton);
-		glfwSetWindowFocusCallback(mHandle, &ImGui_ImplGlfw_WindowFocusCallback);
-		glfwSetCursorPosCallback(mHandle, &ImGui_ImplGlfw_CursorPosCallback);
-		glfwSetCursorEnterCallback(mHandle, &ImGui_ImplGlfw_CursorEnterCallback);
-	}
+	void Init();
 
 	void Deinit()
 	{
 		ZoneScoped;
 		ImGui_ImplGlfw_Shutdown();
 		glfwDestroyWindow(mHandle);
-		mHandle = NULL;
 		glfwTerminate();
 		mHandle = NULL;
 	}

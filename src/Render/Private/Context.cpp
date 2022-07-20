@@ -18,19 +18,19 @@
 #include <TracyD3D12.hpp>
 
 #include "RenderContextHelpers.h"
+#include "Render/TransientResourcesPool.h"
 
-static const UINT   UPLOAD_BUFFERS = 1;
-static const UINT   RTV_HEAP_SIZE = 32;
-static const UINT   DSV_HEAP_SIZE = 32;
-static const UINT   GENERAL_HEAP_SIZE = 4096;
-static const size_t UPLOAD_BUFFER_SIZE = 8_mb;
+static const u32 UPLOAD_BUFFERS = 1;
+static const u32 RTV_HEAP_SIZE = 4096;
+static const u32 DSV_HEAP_SIZE = 32;
+static const u32 GENERAL_HEAP_SIZE = 4096;
+static const u64 UPLOAD_BUFFER_SIZE = 8_mb;
 
 static const D3D12_HEAP_PROPERTIES DefaultHeapProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
 static const D3D12_HEAP_PROPERTIES UploadHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
 static const D3D12_HEAP_PROPERTIES ReadbackHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK);
+static const D3D12_HEAP_PROPERTIES UmaHeapProperties = CD3DX12_HEAP_PROPERTIES(D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE, D3D12_MEMORY_POOL_L0);
 
-TArray<ComPtr<ID3D12Resource>>	gUploadBuffers[UPLOAD_BUFFERS];
-ComPtr<ID3D12CommandAllocator>	gUploadCommandAllocators[UPLOAD_BUFFERS];
 ComPtr<ID3D12DescriptorHeap>    gRTVDescriptorHeap;
 ComPtr<ID3D12DescriptorHeap>    gDSVDescriptorHeap;
 ComPtr<ID3D12DescriptorHeap>    gGeneralDescriptorHeap;
@@ -42,21 +42,24 @@ ComPtr<ID3D12CommandQueue>      gCopyQueue;
 ComPtr<IDXGISwapChain2>         gSwapChain;
 ComPtr<IDXGIFactory4>           gDXGIFactory;
 ComPtr<ID3D12Device>            gDevice;
-ComPtr<ID3D12Fence>             gUploadFences[UPLOAD_BUFFERS];
-uint64_t                        gUploadFenceValues[UPLOAD_BUFFERS] = {};
+
+D3D12CmdList gUploadCmdList;
 
 HANDLE	gSwapChainWaitableObject = nullptr;
 
 UINT gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES];
 
-ComPtr<ID3D12GraphicsCommandList>	gUploadCommandList;
-TArray<D3D12_RESOURCE_BARRIER>		gUploadTransitions;
+TArray<D3D12_RESOURCE_BARRIER> gUploadTransitions;
+
+TArray<PooledBuffer> gUploadBuffers;
 
 TracyLockable(Mutex, gUploadMutex);
 
 TextureData gBackBuffers[BACK_BUFFER_COUNT] = {};
 
 uint64_t				mCurrentUploadFenceValue = 0;
+
+GraphicsDeviceCapabilities gDeviceCaps;
 
 ID3D12Device* GetGraphicsDevice()
 {
@@ -91,7 +94,8 @@ namespace {
 	{
 		ComPtr<IDXGIFactory4> dxgiFactory;
 		UINT FactoryFlags = 0;
-#ifdef DEBUG
+//#ifdef DEBUG
+#if 1
 		FactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
 #endif
 		VALIDATE(CreateDXGIFactory2(FactoryFlags, IID_PPV_ARGS(&dxgiFactory)));
@@ -212,7 +216,7 @@ ComPtr<ID3D12Resource> CreateResource(const D3D12_RESOURCE_DESC* ResourceDescrip
 	return Result;
 }
 
-ComPtr<ID3D12Resource> CreateBuffer(uint64_t Size, bool bUploadBuffer, bool bStagingBuffer)
+ComPtr<ID3D12Resource> CreateBuffer(u64 Size, BufferType Type)
 {
 	D3D12_RESOURCE_DESC BufferDesc = CD3DX12_RESOURCE_DESC::Buffer(Size);
 
@@ -220,19 +224,172 @@ ComPtr<ID3D12Resource> CreateBuffer(uint64_t Size, bool bUploadBuffer, bool bSta
 
 	D3D12_RESOURCE_STATES InitialState = D3D12_RESOURCE_STATE_COPY_DEST;
 
-	if (bUploadBuffer)
+	if (Type == BUFFER_UPLOAD)
 	{
 		HeapProps = &UploadHeapProperties;
 		InitialState = D3D12_RESOURCE_STATE_GENERIC_READ;
 	}
-
-	if (bStagingBuffer)
+	else if (Type == BUFFER_STAGING)
 	{
 		HeapProps = &ReadbackHeapProperties;
 		InitialState = D3D12_RESOURCE_STATE_COPY_DEST;
 	}
+	else if (gDeviceCaps.UMA && gDeviceCaps.CacheCoherentUMA)
+	{
+		HeapProps = &UmaHeapProperties;
+	}
 
 	return CreateResource(&BufferDesc, HeapProps, InitialState, nullptr);
+}
+
+void SetupDeviceCapabilities(D3D_FEATURE_LEVEL FeatureLevel, ID3D12Device* Device)
+{
+	gDeviceCaps.FeatureLevel = FeatureLevel;
+	gDeviceCaps.Tearing = CheckTearingSupport(gDXGIFactory);
+
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS Options{};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.DoublePrecisionFloatInShaders = Options.DoublePrecisionFloatShaderOps;
+			gDeviceCaps.OutputMergerLogicOp = Options.OutputMergerLogicOp;
+			gDeviceCaps.MinPrecisionSupport = Options.MinPrecisionSupport;
+			gDeviceCaps.TiledResourcesTier = Options.TiledResourcesTier;
+			gDeviceCaps.ResourceBindingTier = Options.ResourceBindingTier;
+			gDeviceCaps.PSSpecifiedStencilRef = Options.PSSpecifiedStencilRefSupported;
+			gDeviceCaps.TypedUAVLoadAdditionalFormats = Options.TypedUAVLoadAdditionalFormats;
+			gDeviceCaps.RasterizerOrderefViews = Options.ROVsSupported;
+			gDeviceCaps.ConservativeRasterizationTier = Options.ConservativeRasterizationTier;
+			gDeviceCaps.GPUVirtualAddressMaxBits = MAX(0, (int)Options.MaxGPUVirtualAddressBitsPerResource - 32);
+			gDeviceCaps.ResourceHeapTier = Options.ResourceHeapTier - 1;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_SHADER_MODEL Options{ D3D_SHADER_MODEL_6_4 };
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.ShaderModel5 = Options.HighestShaderModel >= D3D_SHADER_MODEL_5_1;
+			gDeviceCaps.ShaderModel6 = Options.HighestShaderModel - 0x60;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS1  Options{};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.WaveOperations = Options.WaveOps;
+			gDeviceCaps.WaveLaneCount = Options.WaveLaneCountMin;
+			gDeviceCaps.WaveCountTotal = Options.TotalLaneCount;
+			gDeviceCaps.Int64ShaderOperations = Options.Int64ShaderOps;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_ROOT_SIGNATURE Options { D3D_ROOT_SIGNATURE_VERSION_1_1 };
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.RootSignatureVersion = Options.HighestVersion - 1;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_ARCHITECTURE1 Options {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.TileBasedRenderer = Options.TileBasedRenderer;
+			gDeviceCaps.UMA = Options.UMA;
+			gDeviceCaps.CacheCoherentUMA = Options.CacheCoherentUMA;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS2  Options{};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS2, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.DepthBoundTest = Options.DepthBoundsTestSupported;
+			gDeviceCaps.ProgrammableSamplePositionsTier = Options.ProgrammableSamplePositionsTier;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_SHADER_CACHE  Options { D3D12_SHADER_CACHE_SUPPORT_NONE };
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_SHADER_CACHE, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.ShaderCacheSupportSinglePSO = (Options.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_SINGLE_PSO) != 0;
+			gDeviceCaps.ShaderCacheSupportLibrary = (Options.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_LIBRARY) != 0;
+			gDeviceCaps.ShaderCacheSupportAutomaticInprocCache = (Options.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_INPROC_CACHE) != 0;
+			gDeviceCaps.ShaderCacheSupportAutomaticDiscCache = (Options.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_AUTOMATIC_DISK_CACHE) != 0;
+			gDeviceCaps.ShaderCacheSupportDriverManagedCache = (Options.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_DRIVER_MANAGED_CACHE) != 0;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_EXISTING_HEAPS Options {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_EXISTING_HEAPS, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.ExistingSystemMemoryHeaps = Options.Supported;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS4 Options {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.MSAA64KbAlignedTexture = Options.MSAA64KBAlignedTextureSupported;
+			gDeviceCaps.SharedResourceCompatibilityTier = Options.SharedResourceCompatibilityTier;
+			gDeviceCaps.Native16BitShaderOps = Options.Native16BitShaderOpsSupported;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_SERIALIZATION Options {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_SERIALIZATION, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.HeapSerialization = Options.HeapSerializationTier != 0;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS5 Options {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5 , &Options, sizeof(Options))))
+		{
+			gDeviceCaps.RenderPassTier = Options.RenderPassesTier;
+			gDeviceCaps.Raytracing = Options.RaytracingTier != 0;
+			gDeviceCaps.RaytracingTier = Options.RaytracingTier - 10;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS6 Options {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6 , &Options, sizeof(Options))))
+		{
+			gDeviceCaps.AdditionalShadingRates = Options.AdditionalShadingRatesSupported;
+			gDeviceCaps.PerPrimitiveShadingRate = Options.PerPrimitiveShadingRateSupportedWithViewportIndexing;
+			gDeviceCaps.VariableShadingRateTier = Options.VariableShadingRateTier;
+
+			CHECK(Options.ShadingRateImageTileSize <= 63, "increase bits for ShadingRateImageTileSize");
+			gDeviceCaps.ShadingRateImageTileSize = Options.ShadingRateImageTileSize;
+
+			gDeviceCaps.BackgroundProcessing = Options.BackgroundProcessingSupported;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS7 Options {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.MeshShader = Options.MeshShaderTier != 0;
+			gDeviceCaps.SamplerFeedback = Options.SamplerFeedbackTier != 0;
+			gDeviceCaps.SamplerFeedbackTier = Options.SamplerFeedbackTier == 100;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS8 Options {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS8, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.UnalignedBlockTextures = Options.UnalignedBlockTexturesSupported;
+		}
+	}
+	{
+		D3D12_FEATURE_DATA_D3D12_OPTIONS9 Options {};
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS9, &Options, sizeof(Options))))
+		{
+			gDeviceCaps.MeshShaderPipelineStats = Options.MeshShaderPipelineStatsSupported;
+			gDeviceCaps.MeshShaderFullRangeRenderTargetArrayIndex = Options.MeshShaderSupportsFullRangeRenderTargetArrayIndex;
+			gDeviceCaps.AtomicInt64OnTypedResources = Options.AtomicInt64OnTypedResourceSupported;
+			gDeviceCaps.AtomicInt64OnGroupSharedResources = Options.AtomicInt64OnGroupSharedSupported;
+			gDeviceCaps.DerivativesInMeshAndAmpliciationShaders = Options.DerivativesInMeshAndAmplificationShadersSupported;
+		}
+	}
 }
 
 ComPtr<ID3D12Device> CreateDevice()
@@ -241,30 +398,54 @@ ComPtr<ID3D12Device> CreateDevice()
 
 	SIZE_T MaxSize = 0;
 	ComPtr<IDXGIAdapter1> Adapter;
+	D3D_FEATURE_LEVEL FeatureLevel = D3D_FEATURE_LEVEL_11_0;
 #ifndef TEST_WARP
-	for (uint32_t Idx = 0; DXGI_ERROR_NOT_FOUND != gDXGIFactory->EnumAdapters1(Idx, &Adapter); ++Idx)
+	D3D_FEATURE_LEVEL FeatureLevels[] = {
+        D3D_FEATURE_LEVEL_12_2,
+        D3D_FEATURE_LEVEL_12_1,
+        D3D_FEATURE_LEVEL_12_0,
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0,
+        D3D_FEATURE_LEVEL_9_3,
+        D3D_FEATURE_LEVEL_9_2,
+        D3D_FEATURE_LEVEL_9_1,
+        D3D_FEATURE_LEVEL_1_0_CORE,
+	};
+	for (int i = 0; i < ArrayCount(FeatureLevels); ++i)
 	{
-		DXGI_ADAPTER_DESC1 desc;
-		Adapter->GetDesc1(&desc);
-		if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
-			continue;
-
-		if (desc.DedicatedVideoMemory > MaxSize && SUCCEEDED(D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&Result))))
+		FeatureLevel = FeatureLevels[i];
+		bool Success = false;
+		for (uint32_t Idx = 0; DXGI_ERROR_NOT_FOUND != gDXGIFactory->EnumAdapters1(Idx, &Adapter); ++Idx)
 		{
+			DXGI_ADAPTER_DESC1 desc;
 			Adapter->GetDesc1(&desc);
-			Debug::Print("D3D12-capable hardware found:", desc.Description, desc.DedicatedVideoMemory >> 20);
-			MaxSize = desc.DedicatedVideoMemory;
+			if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+				continue;
+
+			if (desc.DedicatedVideoMemory > MaxSize && SUCCEEDED(D3D12CreateDevice(Adapter.Get(), FeatureLevel, IID_PPV_ARGS(&Result))))
+			{
+				Adapter->GetDesc1(&desc);
+				Debug::Print("D3D12-capable hardware found:", desc.Description, desc.DedicatedVideoMemory >> 20, "MB dedicated video memory");
+				MaxSize = desc.DedicatedVideoMemory;
+				Success = true;
+			}
 		}
+		if (Success)
+			break;
 	}
+	CHECK(FeatureLevel != D3D_FEATURE_LEVEL_1_0_CORE, "wtf is this");
 #endif
 
 	if (Result.Get() == nullptr)
 	{
 		Debug::Print("Failed to find a hardware adapter.  Falling back to WARP.\n");
 		VALIDATE(gDXGIFactory->EnumWarpAdapter(IID_PPV_ARGS(&Adapter)));
-		VALIDATE(D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&Result)));
+		VALIDATE(D3D12CreateDevice(Adapter.Get(), FeatureLevel, IID_PPV_ARGS(&Result)));
 	}
 
+	SetupDeviceCapabilities(FeatureLevel, Result.Get());
 //#ifdef _DEBUG
 	ComPtr<ID3D12InfoQueue> pInfoQueue;
 	if (SUCCEEDED(Result.As(&pInfoQueue)))
@@ -285,8 +466,8 @@ ComPtr<ID3D12Device> CreateDevice()
 		// Suppress individual messages by their ID
 		D3D12_MESSAGE_ID DenyIds[] = {
 			D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,   // I'm really not sure how to avoid this message.
-			D3D12_MESSAGE_ID_MAP_INVALID_NULLRANGE,                         // This warning occurs when using capture frame while graphics debugging.
-			D3D12_MESSAGE_ID_UNMAP_INVALID_NULLRANGE,                       // This warning occurs when using capture frame while graphics debugging.
+			//D3D12_MESSAGE_ID_MAP_INVALID_NULLRANGE,                         // This warning occurs when using capture frame while graphics debugging.
+			//D3D12_MESSAGE_ID_UNMAP_INVALID_NULLRANGE,                       // This warning occurs when using capture frame while graphics debugging.
 		};
  
 		D3D12_INFO_QUEUE_FILTER NewFilter = {};
@@ -349,29 +530,10 @@ ComPtr<ID3D12RootSignature> CreateRootSignature(ComPtr<ID3DBlob> RootBlob)
 }
 
 void*    gUploadWaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-uint8_t* gUploadBufferAddress;
-uint64_t gUploadBufferOffset;
-void InitUploadResources()
-{
-	ZoneScoped;
-
-	for (int i = 0; i < UPLOAD_BUFFERS; ++i)
-	{
-		gUploadCommandAllocators[i] = CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT);
-		VALIDATE(gUploadCommandAllocators[i]->Reset());
-		gUploadBuffers[i].push_back(CreateBuffer(UPLOAD_BUFFER_SIZE, true));
-		gUploadFences[i] = CreateFence();
-	}
-
-	gUploadCommandList = CreateCommandList(gUploadCommandAllocators[0].Get(), D3D12_COMMAND_LIST_TYPE_DIRECT);
-	VALIDATE(gUploadCommandList->Reset(gUploadCommandAllocators[0].Get(), nullptr));
-
-	VALIDATE(gUploadBuffers[0][0]->Map(0, nullptr, (void**)&gUploadBufferAddress));
-}
 
 uint32_t gPresentFlags = 0;
 uint32_t gSyncInterval = 1;
-bool gTearingSupported = false;
+
 void InitRender(System::Window& Window)
 {
 	ZoneScoped;
@@ -389,15 +551,14 @@ void InitRender(System::Window& Window)
 	gGeneralDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, GENERAL_HEAP_SIZE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
 	gRTVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RTV_HEAP_SIZE, D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
 	gDSVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
+
 	CreateBackBufferResources(Window);
 
-	if (gTearingSupported)
+	if (gDeviceCaps.Tearing)
 	{
 		gPresentFlags |= DXGI_PRESENT_ALLOW_TEARING;
 		gSyncInterval = 0;
 	}
-
-	InitUploadResources();
 
 	// raster
 	{
@@ -486,15 +647,12 @@ void InitRender(System::Window& Window)
 
 		gComputeRootSignature = CreateRootSignature(RootBlob);
 	}
-} 
+	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, 0);
+}
 
-UINT gCurrentUploadBufferIndex = 0;
-void UploadTextureData(TextureData& TexData, const uint8_t *RawData, uint32_t RawDataSize)
+void UploadTextureData(TextureData& TexData, const uint8_t *RawData, u32 RawDataSize)
 {
 	ZoneScoped;
-
-	uint64_t UploadBufferSize = GetRequiredIntermediateSize(GetTextureResource(TexData.ID), 0, 1);
-	ComPtr<ID3D12Resource> TextureUploadBuffer = CreateBuffer(UploadBufferSize, true);
 
 	D3D12_SUBRESOURCE_DATA SrcData = {};
 	SrcData.pData = RawData;
@@ -512,15 +670,31 @@ void UploadTextureData(TextureData& TexData, const uint8_t *RawData, uint32_t Ra
 		SrcData.SlicePitch = RawDataSize;
 	}
 
+	ID3D12Resource* Resource = GetTextureResource(TexData.ID);
 	D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-		GetTextureResource(TexData.ID),
+		Resource,
 		D3D12_RESOURCE_STATE_COPY_DEST,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
 	);
 
+	if (gDeviceCaps.UMA && gDeviceCaps.CacheCoherentUMA)
+	{
+		Resource->Map(0, nullptr, nullptr);
+		Resource->WriteToSubresource(0, nullptr, RawData, (UINT)SrcData.RowPitch, RawDataSize);
+		Resource->Unmap(0, nullptr);
+
+		ScopedLock Lock(gUploadMutex);
+		gUploadTransitions.push_back(Barrier);
+		return;
+	}
+	PooledBuffer TextureUploadBuffer;
+
+	uint64_t UploadBufferSize = GetRequiredIntermediateSize(Resource, 0, 1);
+	GetTransientBuffer(TextureUploadBuffer, UploadBufferSize, BUFFER_UPLOAD);
+
 	ScopedLock Lock(gUploadMutex);
-	gUploadBuffers[gCurrentUploadBufferIndex].push_back(TextureUploadBuffer);
-	UpdateSubresources<1>(gUploadCommandList.Get(), GetTextureResource(TexData.ID), TextureUploadBuffer.Get(), 0, 0, 1, &SrcData);
+	gUploadBuffers.push_back(TextureUploadBuffer);
+	UpdateSubresources<1>(gUploadCmdList.Get(), Resource, TextureUploadBuffer.Get(), TextureUploadBuffer.Offset, 0, 1, &SrcData);
 	gUploadTransitions.push_back(Barrier);
 }
 
@@ -533,17 +707,7 @@ ComPtr<ID3D12Fence> CreateFence(uint64_t InitialValue, D3D12_FENCE_FLAGS Flags)
 	return Result;
 }
 
-void WaitForUploadFinish()
-{
-	// wait if needed
-	WaitForFenceValue(
-		gUploadFences[gCurrentUploadBufferIndex].Get(),
-		gUploadFenceValues[gCurrentUploadBufferIndex],
-		gUploadWaitEvent
-	);
-}
-
-void FlushUpload()
+void FlushUpload(u64 CurrentFrameID)
 {
 	ZoneScoped;
 	ScopedLock Lock(gUploadMutex);
@@ -552,31 +716,25 @@ void FlushUpload()
 		return;
 	}
 
-	gUploadCommandList->ResourceBarrier((UINT)gUploadTransitions.size(), gUploadTransitions.data());
-	VALIDATE(gUploadCommandList->Close());
-
-	ID3D12CommandList* CommandListsForSubmission[] = { gUploadCommandList.Get() };
-	gGraphicsQueue->ExecuteCommandLists(ArrayCount(CommandListsForSubmission), CommandListsForSubmission);
-
-	FlushQueue(gGraphicsQueue.Get(), gUploadFences[gCurrentUploadBufferIndex].Get(), mCurrentUploadFenceValue, gUploadWaitEvent);
-
+	gUploadCmdList->ResourceBarrier((UINT)gUploadTransitions.size(), gUploadTransitions.data());
 	gUploadTransitions.clear();
-	gUploadBuffers[gCurrentUploadBufferIndex].resize(1); // always leave the first upload buffer
-														 //gUploadBufferAddress = NULL;
-	gUploadBufferOffset = 0;
 
-	VALIDATE(gUploadCommandAllocators[gCurrentUploadBufferIndex]->Reset());
-	VALIDATE(gUploadCommandList->Reset(gUploadCommandAllocators[gCurrentUploadBufferIndex].Get(), nullptr));
+	Submit(gUploadCmdList, CurrentFrameID);
+	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFrameID);
+
+	u64 FenceValue = 0;
+	FlushQueue(gGraphicsQueue.Get(), CreateFence(FenceValue).Get(), FenceValue, gUploadWaitEvent);
+
+	for (auto& Buffer : gUploadBuffers)
+	{
+		DiscardTransientBuffer(Buffer);
+	}
+	gUploadBuffers.clear();
 }
 
 void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Size, D3D12_RESOURCE_STATES TargetState)
 {
 	ZoneScoped;
-	CHECK(Size <= UPLOAD_BUFFER_SIZE, "Buffer data is too large for this.");
-	if (gUploadBufferOffset + Size > UPLOAD_BUFFER_SIZE)
-	{
-		FlushUpload();
-	}
 
 	D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 		Destination,
@@ -584,22 +742,36 @@ void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Si
 		TargetState
 	);
 
+	if (gDeviceCaps.UMA && gDeviceCaps.CacheCoherentUMA)
+	{
+		void* Address = nullptr;
+		Destination->Map(0, nullptr, &Address);
+		memcpy(Address, Data, Size);
+		Destination->Unmap(0, nullptr);
+
+		ScopedLock Lock(gUploadMutex);
+		gUploadTransitions.push_back(Barrier);
+		return;
+	}
+	PooledBuffer UploadBuffer;
+	GetTransientBuffer(UploadBuffer, Size, BUFFER_UPLOAD);
+	u8* UploadBufferAddress = NULL;
+	UploadBuffer->Map(0, nullptr, (void**)&UploadBufferAddress);
+	::memcpy(UploadBufferAddress + UploadBuffer.Offset, Data, Size);
+	UploadBuffer->Unmap(0, nullptr);
 	{
 		ScopedLock Lock(gUploadMutex);
-		::memcpy(gUploadBufferAddress + gUploadBufferOffset, Data, Size);
-		gUploadCommandList->CopyBufferRegion(Destination, 0, gUploadBuffers[gCurrentUploadBufferIndex][0].Get(), gUploadBufferOffset, Size);
-		gUploadBufferOffset += Size;
-
+		gUploadCmdList->CopyBufferRegion(Destination, 0, UploadBuffer.Get(), UploadBuffer.Offset, Size);
 		gUploadTransitions.push_back(Barrier);
 	}
 }
 
-TracyLockable(Mutex, gPresentLock);
+//TracyLockable(Mutex, gPresentLock);
 void PresentCurrentBackBuffer()
 {
 	ZoneScoped;
 
-	ScopedLock Lock(gPresentLock);
+	//ScopedLock Lock(gPresentLock);
 	VALIDATE(gSwapChain->Present(gSyncInterval, gPresentFlags));
 }
 
@@ -625,6 +797,7 @@ ComPtr<ID3D12PipelineState> CreateShaderCombination(
 	TArrayView<StringView> EntryPoints,
 	StringView ShaderFile,
 	TArrayView<DXGI_FORMAT> RenderTargetFormats,
+	D3D12_CULL_MODE CullMode,
 	DXGI_FORMAT DepthTargetFormat,
 	TArrayView<D3D12_RENDER_TARGET_BLEND_DESC> BlendDescs
 )
@@ -713,7 +886,7 @@ ComPtr<ID3D12PipelineState> CreateShaderCombination(
 
 	PSODesc.NumRenderTargets = (UINT)RenderTargetFormats.size();
 
-	CHECK(PSODesc.NumRenderTargets <= 8, "D3D12 Does not support more then 8 render targets.")
+	CHECK(PSODesc.NumRenderTargets <= 8, "D3D12 Does not support more then 8 render targets.");
 	for (UINT i = 0; i < PSODesc.NumRenderTargets; ++i)
 	{
 		PSODesc.RTVFormats[i] = RenderTargetFormats[i];
@@ -730,6 +903,7 @@ ComPtr<ID3D12PipelineState> CreateShaderCombination(
 	PSODesc.InputLayout.NumElements = (UINT)PSOLayout.size();
 	PSODesc.InputLayout.pInputElementDescs = PSOLayout.data();
 	PSODesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+	PSODesc.RasterizerState.CullMode = CullMode;
 	PSODesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
 	PSODesc.SampleDesc.Count = 1;
 	PSODesc.SampleMask = 0xFFFFFFFF;
@@ -762,7 +936,7 @@ ComPtr<ID3D12GraphicsCommandList> CreateCommandList(ID3D12CommandAllocator* Comm
 	return Result;
 }
 
-void CreateTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, D3D12_RESOURCE_STATES InitialState, D3D12_CLEAR_VALUE* ClearValue)
+void CreateResourceForTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, D3D12_RESOURCE_STATES InitialState, D3D12_CLEAR_VALUE* ClearValue)
 {
 	ZoneScoped;
 	D3D12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
@@ -773,8 +947,14 @@ void CreateTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, D3D12_RESOU
 		Flags
 	);
 
-	ComPtr<ID3D12Resource> Resource = CreateResource(&TextureDesc, &DefaultHeapProps, InitialState, ClearValue);
+	const D3D12_HEAP_PROPERTIES* HeapProps = &DefaultHeapProps;
+	if (gDeviceCaps.UMA && gDeviceCaps.CacheCoherentUMA)
+	{
+		HeapProps = &UmaHeapProperties;
+	}
+	ComPtr<ID3D12Resource> Resource = CreateResource(&TextureDesc, HeapProps, InitialState, ClearValue);
 	TexData.ID = StoreTexture(Resource.Get());
+	TexData.Flags = (u8)Flags;
 }
 
 D3D12_GPU_DESCRIPTOR_HANDLE GetGeneralHandleGPU(UINT Index)
@@ -920,9 +1100,9 @@ void UpdateRenderTargetViews(unsigned Width, unsigned Height)
 
 		String Name = StringFromFormat("Back buffer %d", i);
 		gBackBuffers[i].ID = StoreTexture(backBuffer.Get(), Name.c_str());
-		gBackBuffers[i].RTV = i;
-		gBackBuffers[i].Width  = Width;
-		gBackBuffers[i].Height = Height;
+		gBackBuffers[i].RTV = (u16)i;
+		gBackBuffers[i].Width  = (u16)Width;
+		gBackBuffers[i].Height = (u16)Height;
 
 		rtvHandle.Offset(gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]);
 	}
@@ -937,7 +1117,6 @@ void Submit(D3D12CmdList& CmdList, uint64_t CurrentFrameID)
 	switch (CmdList.Type)
 	{
 	case D3D12_COMMAND_LIST_TYPE_DIRECT:
-	case D3D12_COMMAND_LIST_TYPE_BUNDLE:
 		gGraphicsQueue->ExecuteCommandLists(1, CommandLists);
 		break;
 	case D3D12_COMMAND_LIST_TYPE_COMPUTE:
@@ -954,10 +1133,9 @@ void Submit(D3D12CmdList& CmdList, uint64_t CurrentFrameID)
 
 void CreateBackBufferResources(System::Window& Window)
 {
-	DXGI_SWAP_CHAIN_FLAG SwapChainFlag = (DXGI_SWAP_CHAIN_FLAG)(DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH);// | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
+	DXGI_SWAP_CHAIN_FLAG SwapChainFlag = (DXGI_SWAP_CHAIN_FLAG)(DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH | DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT);
 
-	gTearingSupported = CheckTearingSupport(gDXGIFactory);
-	if (gTearingSupported)
+	if (gDeviceCaps.Tearing)
 	{
 		SwapChainFlag = (DXGI_SWAP_CHAIN_FLAG)(SwapChainFlag | DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING);
 	}
@@ -970,7 +1148,7 @@ void CreateBackBufferResources(System::Window& Window)
 	if (gSwapChain)
 	{
 		gSwapChain->ResizeBuffers(
-			3,
+			BACK_BUFFER_COUNT,
 			Window.mSize.x, Window.mSize.y,
 			BACK_BUFFER_FORMAT,
 			SwapChainFlag
@@ -983,7 +1161,7 @@ void CreateBackBufferResources(System::Window& Window)
 
 	if (SwapChainFlag & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)
 	{
-		VALIDATE(gSwapChain->SetMaximumFrameLatency(1));
+		VALIDATE(gSwapChain->SetMaximumFrameLatency(2));
 		gSwapChainWaitableObject = gSwapChain->GetFrameLatencyWaitableObject();
 		CHECK(gSwapChainWaitableObject, "Failed to get waitable object");
 	}
@@ -997,7 +1175,7 @@ bool IsSwapChainReady()
 	return WaitForSingleObjectEx(gSwapChainWaitableObject, 0, true) == WAIT_OBJECT_0;
 }
 
-UINT gCurrentRenderTargetIndex = BACK_BUFFER_COUNT;
+u16 gCurrentRenderTargetIndex = BACK_BUFFER_COUNT;
 void CreateRTV(TextureData& TexData)
 {
 	CHECK(gCurrentRenderTargetIndex < RTV_HEAP_SIZE, "Too much RTV descriptors. Need new plan.");
@@ -1017,7 +1195,7 @@ void CreateRTV(TextureData& TexData)
 	TexData.RTV = gCurrentRenderTargetIndex++;
 }
 
-UINT gCurrentGeneralIndex = 0;
+u16 gCurrentGeneralIndex = 0;
 void CreateSRV(TextureData& TexData)
 {
 	CHECK(gCurrentGeneralIndex < GENERAL_HEAP_SIZE, "Too much SRV descriptors. Need new plan.");
@@ -1051,10 +1229,10 @@ void CreateUAV(TextureData& TexData)
 	Handle.ptr += gCurrentGeneralIndex * gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV];
 	gDevice->CreateUnorderedAccessView(GetTextureResource(TexData.ID), NULL, &UAVDesc, Handle);
 
-	TexData.UAV= gCurrentGeneralIndex++;
+	TexData.UAV = gCurrentGeneralIndex++;
 }
 
-UINT gCurrentDSVIndex = 0;
+u16 gCurrentDSVIndex = 0;
 void CreateDSV(TextureData& TexData)
 {
 	CHECK(gCurrentDSVIndex < DSV_HEAP_SIZE, "Too much DSV descriptors. Need new plan.");

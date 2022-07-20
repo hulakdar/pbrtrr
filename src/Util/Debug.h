@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iostream>
+#include <Windows.h>
 
 #define DEBUG_BREAK() \
 		if (IsDebuggerPresent()) \
@@ -10,17 +11,21 @@
 
 #ifndef RELEASE
 # define CHECK(x, msg) \
-		if (!(x)) \
-		{ \
-			Debug::Print("Assertion failed: '", #x, "'. ",msg); \
-			DEBUG_BREAK(); \
-		}
+		do {           \
+			if (!(x))  \
+			{          \
+				Debug::Print("Assertion failed: '", #x, "'. ",msg); \
+				DEBUG_BREAK(); \
+			}          \
+		} while (false)
 
 # define VALIDATE(x) \
-		if (!Debug::ValidateImpl(x)) \
-		{ \
-			DEBUG_BREAK(); \
-		}
+		do {         \
+			if (!Debug::ValidateImpl(x)) \
+			{ \
+				DEBUG_BREAK(); \
+			} \
+		} while (false)
 
 #else
 # define CHECK(x, msg) ((void)(x))

@@ -2,6 +2,9 @@ project "ImGui"
     kind "StaticLib"
     language "C++"
     staticruntime "Off"
+    systemversion "latest"
+    cppdialect "C++17"
+    runtime "Release"
 
 	targetdir ("bin/" .. outputdir .. "/%{prj.name}")
     objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
@@ -30,11 +33,3 @@ project "ImGui"
         "IMGUI_DISABLE_OBSOLETE_FUNCTIONS",
         "IMGUI_DISABLE_OBSOLETE_KEYIO"
     }
-
-	filter "system:windows"
-        systemversion "latest"
-        cppdialect "C++17"
-        staticruntime "Off"
-
-    filter { "system:windows", "configurations:Release" }
-        buildoptions "/MT"

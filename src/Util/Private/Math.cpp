@@ -162,10 +162,10 @@ Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 PolarAngles)
 	float sinb = sinf(PolarAngles.y);
 	float sinc = sinf(0);
 	float R[] = {
-		cosb*cosc,sina*sinb*cosc-cosa*sinc,cosa*sinb*cosc+sina*sinc, 0,
-		cosb*sinc,sina*sinb*sinc+cosa*cosc,cosa*sinb*sinc-sina*cosc, 0,
-		   -sinb, sina*cosb,               cosa*cosb,               -1,
-		0,0,0,1
+		cosb*cosc, sina*sinb*cosc-cosa*sinc, cosa*sinb*cosc+sina*sinc, 0,
+		cosb*sinc, sina*sinb*sinc+cosa*cosc, cosa*sinb*sinc-sina*cosc, 0,
+		   -sinb,  sina*cosb,               -cosa*cosb,                1,
+		0,         0,                        0,                        1
 	};
 	float T[] = {
 		1,0,0,0,
@@ -260,7 +260,7 @@ Vec4PackUnorm::Vec4PackUnorm()
 
 Vec4PackUnorm::Vec4PackUnorm(float Xin)
 {
-	CHECK(Xin >= 0.f && Xin <= 1.f, "This format can only hold normalized values")
+	CHECK(Xin >= 0.f && Xin <= 1.f, "This format can only hold normalized values");
 
 	x = y = uint32_t(Xin * Max10bit);
 	z = uint32_t(Xin * Max10bit);
@@ -269,10 +269,10 @@ Vec4PackUnorm::Vec4PackUnorm(float Xin)
 
 Vec4PackUnorm::Vec4PackUnorm(float* p)
 {
-	CHECK(p[0] >= 0.f && p[0] <= 1.f, "This format can only hold normalized values")
-	CHECK(p[1] >= 0.f && p[1] <= 1.f, "This format can only hold normalized values")
-	CHECK(p[2] >= 0.f && p[2] <= 1.f, "This format can only hold normalized values")
-	CHECK(p[3] >= 0.f && p[3] <= 1.f, "This format can only hold normalized values")
+	CHECK(p[0] >= 0.f && p[0] <= 1.f, "This format can only hold normalized values");
+	CHECK(p[1] >= 0.f && p[1] <= 1.f, "This format can only hold normalized values");
+	CHECK(p[2] >= 0.f && p[2] <= 1.f, "This format can only hold normalized values");
+	CHECK(p[3] >= 0.f && p[3] <= 1.f, "This format can only hold normalized values");
 
 	x = uint32_t(p[0] * Max10bit);
 	y = uint32_t(p[1] * Max10bit);
@@ -282,9 +282,9 @@ Vec4PackUnorm::Vec4PackUnorm(float* p)
 
 Vec4PackUnorm::Vec4PackUnorm(float Xin, float Yin, float Zin, float Win)
 {
-	CHECK(Xin >= 0.f && Xin <= 1.f, "This format can only hold normalized values")
-	CHECK(Yin >= 0.f && Yin <= 1.f, "This format can only hold normalized values")
-	CHECK(Zin >= 0.f && Zin <= 1.f, "This format can only hold normalized values")
+	CHECK(Xin >= 0.f && Xin <= 1.f, "This format can only hold normalized values");
+	CHECK(Yin >= 0.f && Yin <= 1.f, "This format can only hold normalized values");
+	CHECK(Zin >= 0.f && Zin <= 1.f, "This format can only hold normalized values");
 
 	x = uint32_t(Xin * Max10bit);
 	y = uint32_t(Yin * Max10bit);

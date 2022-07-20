@@ -38,8 +38,8 @@ ComPtr<ID3D12CommandAllocator> GetCommandAllocator(D3D12_COMMAND_LIST_TYPE Type,
 	return Result;
 }
 
-void DiscardCommandAllocator(ComPtr<ID3D12CommandAllocator>&& Allocator, D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameID)
+void DiscardCommandAllocator(ComPtr<ID3D12CommandAllocator>& Allocator, D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameID)
 {
 	ScopedLock AutoLock(gFreeAllocatorsLock);
-	gInFlightAllocators[Type].push(WorkingAllocator{CurrentFrameID + 3, MOVE(Allocator)});
+	gInFlightAllocators[Type].push(WorkingAllocator{CurrentFrameID + 4, MOVE(Allocator)});
 }

@@ -1,34 +1,86 @@
-
 #include "Threading/DedicatedThread.h"
+#include "Threading/Worker.h"
 #include "Util/Util.h"
-#include "../Worker.h"
+#include "Util/Math.h"
+#include "Util/Debug.h"
+#include "Containers/Array.h"
 
-DedicatedThreadData gWorkersDedicatedThreadData;
-std::thread			gWorkerThreads[3];
+TArray<DedicatedThreadData> gWorkers;
 
-DedicatedThreadData* GetWorkerDedicatedThreadData()
+Ticket EnqueueToWorker(TFunction<void(void)>&& Work)
 {
-	return &gWorkersDedicatedThreadData;
+	return EnqueueWork(&gWorkers[rand()%gWorkers.size()], MOVE(Work));
 }
 
-Ticket EnqueueToWorker(const TFunction<void(void)>& WorkItem)
+void ParallelFor(u64 Size, TFunction<void(u64, u64)>&& Work)
 {
-	return EnqueueWork(&gWorkersDedicatedThreadData, MOVE(WorkItem));
+	u64 WorkDivisor = Size / (gWorkers.size() + 1);
+	u64 Begin = 0;
+	u64 End = WorkDivisor;
+	TArray<Ticket> Tickets;
+	if (Begin != End)
+	{
+		Tickets.resize(gWorkers.size());
+		for (u64 i = 0; i < gWorkers.size(); ++i)
+		{
+			Tickets[i] = EnqueueWork(&gWorkers[i],
+				[Begin, End, &Work]()
+				{
+					Work(Begin, End);
+				}
+			);
+			Begin += WorkDivisor;
+			End += WorkDivisor;
+		}
+		CHECK(Begin <= Size, "Debug ParallelFor");
+	}
+	if (Begin != Size)
+	{
+		Work(Begin, Size);
+	}
+	for (auto It : Tickets)
+	{
+		WaitForCompletion(It);
+	}
+}
+
+bool StealWork()
+{
+	for (int i = 0; i < gWorkers.size() * 2; ++i)
+	{
+		DedicatedThreadData& randomWorker = gWorkers[rand() % gWorkers.size()];
+		if (randomWorker.WorkItems.empty() || !randomWorker.ItemsLock.try_lock())
+		{
+			continue;
+		}
+		if (randomWorker.WorkItems.empty())
+		{
+			randomWorker.ItemsLock.unlock();
+			continue;
+		}
+		WorkItem Item = MOVE(randomWorker.WorkItems.front());
+		randomWorker.WorkItems.pop();
+		randomWorker.ItemsLock.unlock();
+		ExecuteItem(Item);
+		return true;
+	}
+	return false;
 }
 
 void StartWorkerThreads()
 {
-	for (int i = 0; i < ArrayCount(gWorkerThreads); ++i)
+	u32 CoreCount = std::thread::hardware_concurrency();
+	gWorkers.resize(MAX(1, (i32)CoreCount - 2));
+
+	for (int i = 0; i < gWorkers.size(); ++i)
 	{
-		gWorkerThreads[i] = StartDedicatedThread(&gWorkersDedicatedThreadData, L"Worker");
+		String Name = StringFromFormat("Worker %d", i);
+		StartDedicatedThread(&gWorkers[i], Name);
 	}
 }
 
 void StopWorkerThreads()
 {
-	StopDedicatedThread(&gWorkersDedicatedThreadData);
-
-	for (int i = 0; i < ArrayCount(gWorkerThreads); ++i)
-		if (gWorkerThreads[i].joinable())
-			gWorkerThreads[i].join();
+	for (int i = 0; i < gWorkers.size(); ++i)
+		StopDedicatedThread(&gWorkers[i]);
 }

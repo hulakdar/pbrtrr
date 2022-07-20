@@ -3,7 +3,9 @@
 #include "Containers/Function.h"
 #include "Containers/String.h"
 #include "Containers/Queue.h"
+#include "Containers/UniquePtr.h"
 #include "Threading/Mutex.h"
+#include "Util/Util.h"
 #include "Thread.h"
 #include <thread>
 #include <condition_variable>
@@ -16,19 +18,27 @@ struct WorkItem
 	Ticket                WorkDoneTicket;
 };
 
+void ExecuteItem(WorkItem& Item);
+
 struct DedicatedThreadData
 {
 	bool ThreadShouldStop = false;
-	TracyLockable(Mutex, ItemsLock);
-	std::condition_variable_any WakeUp;
+	MovableMutex ItemsLock;
+	TUniquePtr<std::condition_variable_any> WakeUp;
 	TQueue<WorkItem> WorkItems;
 	String ThreadName;
+	Thread ActualThread;
+
+	DedicatedThreadData()
+		: WakeUp(new std::condition_variable_any())
+	{
+	}
 };
 
-Thread StartDedicatedThread(DedicatedThreadData* DedicatedThread, WString ThreadName);
+void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName);
 void StopDedicatedThread(DedicatedThreadData* DedicatedThread);
 
-Ticket EnqueueWork(DedicatedThreadData* DedicatedThread, const TFunction<void(void)>& Work);
+Ticket EnqueueWork(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work);
 bool   WorkIsDone(Ticket WorkDoneTicket);
-bool   TryPopAndExecute(DedicatedThreadData* DedicatedThread);
 void   WaitForCompletion(Ticket WorkDoneTicket);
+void   ExecutePendingWork(DedicatedThreadData* DedicatedThread);

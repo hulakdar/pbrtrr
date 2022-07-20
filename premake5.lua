@@ -23,6 +23,12 @@ filter "configurations:Development"
     symbols "On"
     optimize "On"
 
+filter "configurations:Profile"
+    defines { "PROFILE" }
+    targetsuffix ("_Profile")
+    symbols "On"
+    optimize "On"
+
 filter "configurations:Release"
     defines { "NDEBUG", "RELEASE" }
     flags { "LinkTimeOptimization" }
@@ -52,15 +58,23 @@ end
 
 if _ACTION == "vs2017" then
     libdirs {"./thirdparty/glfw/lib-vc2017"}
-else
+elseif _ACTION == "vs2019" then
     libdirs {"./thirdparty/glfw/lib-vc2019"}
+else
+    libdirs {"./thirdparty/glfw/lib-vc2022"}
+    postbuildcommands {
+        "copy thirdparty\\glfw\\lib-vc2022\\glfw3.dll bin",
+    }
 end
-
+    postbuildcommands {
+        "copy thirdparty\\assimp\\bin\\Release\\assimp-vc142-mt.dll bin",
+        "copy thirdparty\\winpixeventruntime\\bin\\x64\\WinPixEventRuntime.dll bin",
+    }
+    
     libdirs {
         -- thirdparty
         "./thirdparty/assimp",
         "./thirdparty/irrXML",
-        "./thirdparty/zlib",
         "./thirdparty/EASTL",
         "./thirdparty/winpixeventruntime/bin/x64",
     }
@@ -79,6 +93,8 @@ end
         "dxguid",
         "d3d12",
         "dxgi",
+        -- windows
+        "Winmm",
         -- thirdparty
         "imgui",
         "irrxml",
@@ -104,60 +120,50 @@ end
         "NOMINMAX",
         "WIN32",
         "_WINDOWS",
-        "GLFW_EXPOSE_NATIVE_WIN32"
+        -- "GLFW_EXPOSE_NATIVE_WIN32"
     }
 
     filter "Debug"
-        staticruntime "Off"
         defines {
             "GLFW_INCLUDE_NONE",
             "EA_DEBUG",
             "USE_PIX",
-            "BUILD_DEBUG"
         }
         links {
             "EASTLd",
-            "assimp-vc142-mtd",
-            "libz-staticmtd"
+            "assimp-vc142-mt",
         }
 
     filter "Profile"
-        staticruntime "Off"
+        runtime "Release"
         defines {
             "TRACY_ENABLE",
             "USE_PIX",
-            "BUILD_PROFILE",
         }
         links {
             "EASTL",
             "assimp-vc142-mt",
-            "libz-staticmt"
         }
     
     filter "Development"
-        staticruntime "Off"
+        runtime "Release"
         defines {
-            "BUILD_DEVELOPMENT",
             "USE_PIX",
         }
         links {
             "EASTL",
             "assimp-vc142-mt",
-            "libz-staticmt"
         }
 
 
     filter "Release"
-        staticruntime "Off"
-        defines { "BUILD_RELEASE" }
+        runtime "Release"
         links {
             "EASTL",
             "assimp-vc142-mt",
-            "libz-staticmt"
         }
 
-
-    --[[ This stuff is just fore reference, it doesn't really work that well
+    --[[ This stuff is just for reference, it doesn't really work that well
 
     systemversion "latest"
 

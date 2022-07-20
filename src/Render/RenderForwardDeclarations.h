@@ -24,6 +24,7 @@ enum D3D12_FENCE_FLAGS;
 enum D3D12_RESOURCE_STATES;
 enum D3D12_COMMAND_LIST_TYPE;
 enum D3D12_RESOURCE_FLAGS;
+enum D3D12_CULL_MODE;
 
 struct D3D12_CLEAR_VALUE;
 struct D3D12_RESOURCE_DESC;
@@ -45,3 +46,4 @@ struct ID3D12GraphicsCommandList;
 
 struct TextureData;
 struct D3D12CmdList;
+enum   BufferType;

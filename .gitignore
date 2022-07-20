@@ -19,5 +19,5 @@
 *.sln
 
 # Intermidiates
-bin-int/
-bin/
+./bin-int/
+./bin/

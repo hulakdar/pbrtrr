@@ -19,7 +19,7 @@ inline float round(float f) {
 
 /** The underlying representation is always int in this implementation.
     With template tricks or a type argument one can implement 
-    a variant that chooses between int8, int16, int32, and int64 for
+    a variant that chooses between int8, int16, i32, and int64 for
     the internal representation...or use the somewhat more obscure C
     "int m_bits:bitcount;" syntax, which does not actually save
     space below 8 bits because of alignment requirements.

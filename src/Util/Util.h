@@ -23,6 +23,9 @@ void WriteAndAdvance(uint8_t*& DataPtr, const T& Data)
 template <typename T, int Count>
 int ArrayCount(T (&)[Count]) { return Count; }
 
+template <typename T, typename C>
+T& RandomElement(C& Container) { return Container[rand() % Container.size()]; }
+
 StringView LoadWholeFile(StringView Path);
 
 // size custom literal

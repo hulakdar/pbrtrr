@@ -31,35 +31,30 @@ public:
 		Size = InData != nullptr;
 	}
 
-	T& operator[](uint64_t Index) { CHECK(Index < Size, "Out of bounds access"); return Data[Index]; }
+	const T& operator[](uint64_t Index) { CHECK(Index < Size, "Out of bounds access"); return Data[Index]; }
 	uint64_t size() { return Size; }
-	T* data() { return Data; }
+	const T* data() { return Data; }
 private:
-	T*	Data;
-	uint64_t	Size;
+	const T* Data;
+	uint64_t Size;
 
-	struct Iterator
+	struct ConstIterator
 	{
-		Iterator(T* InPtr) : Ptr(InPtr) {}
-		T& operator*() const { return *Ptr; }
-		T* operator->() const { return Ptr; }
+		ConstIterator(const T* InPtr) : Ptr(InPtr) {}
+		const T& operator * () const { return *Ptr; }
+		const T* operator ->() const { return Ptr; }
 
-		Iterator& operator++() { Ptr++; return *this; }
-		Iterator& operator++(int) { Iterator Tmp = *this; operator++(); return Tmp; }
+		ConstIterator& operator ++()    { Ptr++; return *this; }
+		ConstIterator& operator ++(int) { ConstIterator Tmp = *this; ++(*this); return Tmp; }
 
-		//using iterator_category = std::forward_iterator_tag;
-		//using difference_type   = std::ptrdiff_t;
-
-		friend bool operator == (const Iterator& a, const Iterator& b) { return a.Ptr == b.Ptr; };
-		friend bool operator != (const Iterator& a, const Iterator& b) { return a.Ptr != b.Ptr; };
+		friend bool operator == (const ConstIterator& a, const ConstIterator& b) { return a.Ptr == b.Ptr; };
+		friend bool operator != (const ConstIterator& a, const ConstIterator& b) { return a.Ptr != b.Ptr; };
 	private:
-		T* Ptr;
+		const T* Ptr;
 	};
-
 public:
-
-	Iterator begin() { return Iterator(Data); }
-	Iterator end() { return Iterator(Data + Size); }
+	ConstIterator begin() { return ConstIterator(Data); }
+	ConstIterator end() { return ConstIterator(Data + Size); }
 };
 
 using BinaryBlob = TArrayView<uint8_t>;

@@ -18,21 +18,14 @@ namespace {
 		return DedicatedThread->ThreadShouldStop && DedicatedThread->WorkItems.empty();
 	}
 
-	void ExecuteItem(WorkItem& Item)
-	{
-		{
-			ZoneScopedN("Threaded work item");
-			Item.Work();
-		}
-		ScopedLock AutoLock(gTicketsLock);
-		gDedicatedThreadData.erase(Item.WorkDoneTicket.Value);
-	}
-
 	void PopAndExecute(DedicatedThreadData *DedicatedThread)
 	{
-		UniqueLock Lock(DedicatedThread->ItemsLock);
-		DedicatedThread->WakeUp.wait(Lock, [DedicatedThread]() { return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.empty(); });
-		if (ThreadShouldExit(DedicatedThread))
+		UniqueMovableLock Lock(DedicatedThread->ItemsLock);
+		DedicatedThread->WakeUp->wait(Lock, [DedicatedThread]() {
+			return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.empty();
+		});
+
+		if (DedicatedThread->WorkItems.empty())
 		{
 			return;
 		}
@@ -43,9 +36,9 @@ namespace {
 		ExecuteItem(Item);
 	}
 
-	void DedicatedThreadProc(DedicatedThreadData *DedicatedThread, WString ThreadName)
+	void DedicatedThreadProc(DedicatedThreadData *DedicatedThread, String ThreadName)
 	{
-		SetThreadDescription(GetCurrentThread(), ThreadName.c_str());
+		tracy::SetThreadName(ThreadName.data());
 		while (!DedicatedThread->ThreadShouldStop)
 		{
 			PopAndExecute(DedicatedThread);
@@ -53,27 +46,27 @@ namespace {
 	}
 }
 
-bool TryPopAndExecute(DedicatedThreadData* DedicatedThread)
+void ExecuteItem(WorkItem& Item)
 {
-	UniqueLock Lock(DedicatedThread->ItemsLock);
-	if (DedicatedThread->WorkItems.empty())
-		return false;
-	WorkItem Item = MOVE(DedicatedThread->WorkItems.front());
-	DedicatedThread->WorkItems.pop();
-	Lock.unlock();
-	ExecuteItem(Item);
-	return true;
+	{
+		ZoneScopedN("Threaded work item");
+		Item.Work();
+	}
+	ScopedLock AutoLock(gTicketsLock);
+	gDedicatedThreadData.erase(Item.WorkDoneTicket.Value);
 }
 
-Thread StartDedicatedThread(DedicatedThreadData* DedicatedThread, WString ThreadName)
+void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName)
 {
-	return Thread(DedicatedThreadProc, DedicatedThread, ThreadName);
+	DedicatedThread->ActualThread = Thread(DedicatedThreadProc, DedicatedThread, ThreadName);
 }
 
 void StopDedicatedThread(DedicatedThreadData* DedicatedThread)
 {
 	DedicatedThread->ThreadShouldStop = true;
-	DedicatedThread->WakeUp.notify_all();
+	DedicatedThread->WakeUp->notify_all();
+	if (DedicatedThread->ActualThread.joinable())
+		DedicatedThread->ActualThread.join();
 }
 
 bool WorkIsDone(Ticket WorkDoneTicket)
@@ -86,26 +79,41 @@ void WaitForCompletion(Ticket WorkDoneTicket)
 {
 	while (!WorkIsDone(WorkDoneTicket))
 	{
-		//ZoneScoped;
-		if (!TryPopAndExecute(GetWorkerDedicatedThreadData()))
+		if (!StealWork())
 		{
-			//ZoneScopedN("Sleep 1ms");
-			//Sleep(1);
+			//::SleepEx(1, true);
 		}
 	}
 }
 
-Ticket EnqueueWork(DedicatedThreadData *DedicatedThread, const TFunction<void(void)>& Work)
+Ticket EnqueueWork(DedicatedThreadData *DedicatedThread, TFunction<void(void)>&& Work)
 {
 	ZoneScoped;
-	ScopedLock TicketAutoLock(gTicketsLock);
-	uint64_t TicketID = gCurrentTicketId.fetch_add(1);
+	uint64_t TicketID = -1;
 	{
-		ScopedLock ItemsAutoLock(DedicatedThread->ItemsLock);
+		ScopedLock TicketAutoLock(gTicketsLock);
+		TicketID = gCurrentTicketId.fetch_add(1);
+	}
+	{
+		ScopedMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
 		DedicatedThread->WorkItems.push({ MOVE(Work), Ticket {TicketID} });
 	}
-	DedicatedThread->WakeUp.notify_one();
+	DedicatedThread->WakeUp->notify_one();
+
+	ScopedLock TicketAutoLock(gTicketsLock);
 	gDedicatedThreadData.emplace(TicketID);
 	return Ticket{ TicketID };
+}
+
+void   ExecutePendingWork(DedicatedThreadData* DedicatedThread)
+{
+	while(!DedicatedThread->WorkItems.empty())
+	{
+		UniqueMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
+		WorkItem Work = MOVE(DedicatedThread->WorkItems.front());
+		DedicatedThread->WorkItems.pop();
+		ItemsAutoLock.unlock();
+		ExecuteItem(Work);
+	}
 }
 

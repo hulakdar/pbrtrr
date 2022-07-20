@@ -36,10 +36,13 @@ void InitGUI(const System::Window& WindowHandle)
 		ImGuiIO& io = ImGui::GetIO();
 		io.Fonts->AddFontFromFileTTF("content/fonts/Roboto.ttf", 20);
 		uint8_t* Data = nullptr;
-		io.Fonts->GetTexDataAsAlpha8(&Data, &gFontTexData.Width, &gFontTexData.Height);
+		int w = 0, h = 0;
+		io.Fonts->GetTexDataAsAlpha8(&Data, &w, &h);
+		gFontTexData.Width = (u16)w;
+		gFontTexData.Height = (u16)h;
 		gFontTexData.Format = DXGI_FORMAT_R8_UNORM;
-		CreateTexture(gFontTexData, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
-		UploadTextureData(gFontTexData, Data);
+		CreateResourceForTexture(gFontTexData, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+		UploadTextureData(gFontTexData, Data, w*h*4);
 		CreateSRV(gFontTexData);
 	});
 

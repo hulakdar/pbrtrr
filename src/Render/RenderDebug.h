@@ -1,8 +1,8 @@
 #pragma once
 
+#include <windows.h>
 
 #ifndef RELEASE
-#include <windows.h>
 static wchar_t g_ScratchNameBuffer[1024];
 
 template<typename T, typename... TArgs>
@@ -20,7 +20,7 @@ void SetD3DName(T& Ptr, TArgs ...Args)
 }
 #else
 template<typename T, typename... TArgs>
-void SetD3DName(T& Ptr, TArgs ...Args) {}
+void SetD3DName(T&, TArgs ...) {}
 #endif
 
 #include <WinPixEventRuntime/pix3.h>

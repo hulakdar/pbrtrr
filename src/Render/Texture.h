@@ -1,24 +1,23 @@
 #pragma once
-#include <stdint.h>
+#include "Common.h"
 
-struct TexID
-{
-	uint32_t Value = 0;
-};
+struct TexID { u32 Value = 0; };
 
 struct TextureData
 {
-	TexID    ID;
-	int32_t  Width  = 0;
-	int32_t  Height = 0;
-	uint32_t Format = 0;
-	uint32_t SRV    = 0;
-	uint32_t UAV    = 0;
-	uint32_t RTV    = 0;
-	uint32_t DSV    = 0;
+	TexID ID;
+	u16 Width  = MAXWORD;
+	u16 Height = MAXWORD;
+	u16 SRV    = MAXWORD;
+	u16 UAV    = MAXWORD;
+	u16 RTV    = MAXWORD;
+	u16 DSV    = MAXWORD;
+	u8  Format = 0;
+	u8  Flags  = 0;
 };
 
 struct ID3D12Resource;
+enum DXGI_FORMAT;
 
 TexID           StoreTexture(ID3D12Resource* Resource, const char* Name = "");
 ID3D12Resource* GetTextureResource(TexID Id);
@@ -39,32 +38,32 @@ void            ReleaseTextures();
 
 struct DDS_PIXELFORMAT
 {
-  uint32_t dwSize;
-  uint32_t dwFlags;
-  uint32_t dwFourCC;
-  uint32_t dwRGBBitCount;
-  uint32_t dwRBitMask;
-  uint32_t dwGBitMask;
-  uint32_t dwBBitMask;
-  uint32_t dwABitMask;
+  u32 dwSize;
+  u32 dwFlags;
+  u32 dwFourCC;
+  u32 dwRGBBitCount;
+  u32 dwRBitMask;
+  u32 dwGBitMask;
+  u32 dwBBitMask;
+  u32 dwABitMask;
 };
 
 struct DDS_HEADER
 {
-  uint32_t        dwSize;
-  uint32_t        dwFlags;
-  uint32_t        dwHeight;
-  uint32_t        dwWidth;
-  uint32_t        dwPitchOrLinearSize;
-  uint32_t        dwDepth;
-  uint32_t        dwMipMapCount;
-  uint32_t        dwReserved1[11];
+  u32          dwSize;
+  u32          dwFlags;
+  u32          dwHeight;
+  u32          dwWidth;
+  u32          dwPitchOrLinearSize;
+  u32          dwDepth;
+  u32          dwMipMapCount;
+  u32          dwReserved1[11];
   DDS_PIXELFORMAT ddspf;
-  uint32_t        dwCaps;
-  uint32_t        dwCaps2;
-  uint32_t        dwCaps3;
-  uint32_t        dwCaps4;
-  uint32_t        dwReserved2;
+  u32          dwCaps;
+  u32          dwCaps2;
+  u32          dwCaps3;
+  u32          dwCaps4;
+  u32          dwReserved2;
 };
 
 enum DDS_RESOURCE_DIMENSION {
@@ -77,10 +76,12 @@ enum DDS_RESOURCE_DIMENSION {
 
 struct DDS_HEADER_DXT10
 {
-  enum DXGI_FORMAT       dxgiFormat;
+  DXGI_FORMAT            dxgiFormat;
   DDS_RESOURCE_DIMENSION resourceDimension;
-  uint32_t               miscFlag;
-  uint32_t               arraySize;
-  uint32_t               miscFlags2;
+  u32                 miscFlag;
+  u32                 arraySize;
+  u32                 miscFlags2;
 };
+
+DXGI_FORMAT FormatFromFourCC(u32 FourCC);
 

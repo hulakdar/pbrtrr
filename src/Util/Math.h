@@ -98,6 +98,7 @@ using UVec2 = TVec2<unsigned>;
 using IVec2 = TVec2<int>;
 using IVec3 = TVec3<int>;
 using IVec4 = TVec4<int>;
+using SVec2 = TVec2<short>;
 
 struct Vec3Pack
 {

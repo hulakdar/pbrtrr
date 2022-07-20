@@ -4,22 +4,18 @@
 #include "..\RenderThread.h"
 
 DedicatedThreadData	gRenderDedicatedThreadData;
-Thread				gRenderDedicatedThread;
 
 void StartRenderThread()
 {
-	gRenderDedicatedThread = StartDedicatedThread(&gRenderDedicatedThreadData, L"RenderThread");
+	StartDedicatedThread(&gRenderDedicatedThreadData, String("RenderThread"));
 }
 
 void StopRenderThread()
 {
 	StopDedicatedThread(&gRenderDedicatedThreadData);
-
-	if (gRenderDedicatedThread.joinable())
-		gRenderDedicatedThread.join();
 }
 
-Ticket EnqueueRenderThreadWork(const TFunction<void(void)>& RenderThreadWork)
+Ticket EnqueueRenderThreadWork(TFunction<void(void)>&& RenderThreadWork)
 {
 	ZoneScoped;
 	return EnqueueWork(&gRenderDedicatedThreadData, MOVE(RenderThreadWork));

@@ -1,3 +1,4 @@
+#define GLFW_EXPOSE_NATIVE_WIN32
 #include "System/Window.h"
 
 #include <backends/imgui_impl_glfw.h>
@@ -57,3 +58,28 @@ void System::Callbacks::MouseButton(GLFWwindow* window, int button, int action, 
 	ImGui_ImplGlfw_MouseButtonCallback(window, button, action, mods);
 }
 
+void System::Window::Init()
+{
+	ZoneScoped;
+
+	glfwSetErrorCallback(&Callbacks::Error);
+
+	glfwInit();
+	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+	mHandle = glfwCreateWindow(mSize.x, mSize.y, "pbrtrr", nullptr, nullptr);
+	CHECK(mHandle != nullptr, "GLFW failed to create a window.");
+
+	mHwnd = glfwGetWin32Window(mHandle);
+	CHECK(mHwnd != nullptr, "Couldn't get HWND from GLFW window.");
+
+	glfwSetWindowUserPointer(mHandle, this);
+	glfwSetWindowSizeCallback(mHandle, &Callbacks::WindowSize);
+	glfwSetScrollCallback(mHandle, &Callbacks::Scroll);
+	glfwSetKeyCallback(mHandle, &Callbacks::Key);
+	glfwSetCharCallback(mHandle, &Callbacks::Char);
+	glfwSetDropCallback(mHandle, &Callbacks::Drop);
+	glfwSetMouseButtonCallback(mHandle, &Callbacks::MouseButton);
+	glfwSetWindowFocusCallback(mHandle, &ImGui_ImplGlfw_WindowFocusCallback);
+	glfwSetCursorPosCallback(mHandle, &ImGui_ImplGlfw_CursorPosCallback);
+	glfwSetCursorEnterCallback(mHandle, &ImGui_ImplGlfw_CursorEnterCallback);
+}

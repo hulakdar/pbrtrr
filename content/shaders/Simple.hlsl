@@ -29,6 +29,8 @@ SamplerState BilinearSampler : register(s1);
 
 float4 MainPS(VertexShaderOutput In) : SV_TARGET
 {
-	return Diffuse.Sample(BilinearSampler, In.UV);
+	float4 Color = Diffuse.Sample(BilinearSampler, In.UV);
+	clip(Color.a);
+	return Color;
 }
 

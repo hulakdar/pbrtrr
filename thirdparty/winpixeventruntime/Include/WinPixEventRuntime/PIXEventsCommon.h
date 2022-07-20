@@ -169,7 +169,7 @@ inline void PIXCopyEventArgument(_Out_writes_to_ptr_(limit) UINT64*& destination
     }
 }
 
-// int32 specialization to avoid slower double memory writes
+// i32 specialization to avoid slower double memory writes
 template<>
 inline void PIXCopyEventArgument<INT32>(_Out_writes_to_ptr_(limit) UINT64*& destination, _In_ const UINT64* limit, INT32 argument)
 {
@@ -180,7 +180,7 @@ inline void PIXCopyEventArgument<INT32>(_Out_writes_to_ptr_(limit) UINT64*& dest
     }
 }
 
-// unsigned int32 specialization to avoid slower double memory writes
+// unsigned i32 specialization to avoid slower double memory writes
 template<>
 inline void PIXCopyEventArgument<UINT32>(_Out_writes_to_ptr_(limit) UINT64*& destination, _In_ const UINT64* limit, UINT32 argument)
 {

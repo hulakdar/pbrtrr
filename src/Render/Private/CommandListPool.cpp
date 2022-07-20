@@ -36,7 +36,7 @@ D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameI
 
 void DiscardCommandList(D3D12CmdList& CmdList, uint64_t CurrentFrameID)
 {
-	DiscardCommandAllocator(MOVE(CmdList.CommandAllocator), CmdList.Type, CurrentFrameID);
+	DiscardCommandAllocator(CmdList.CommandAllocator, CmdList.Type, CurrentFrameID);
 
 	ScopedLock AutoLock(gCommandListLock);
 	gCommandLists[CmdList.Type].push(MOVE(CmdList.CommandList));
