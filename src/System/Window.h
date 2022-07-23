@@ -14,17 +14,6 @@
 namespace System
 {
 
-namespace Callbacks
-{
-	void Error(int error,const char* description);
-	void WindowSize(GLFWwindow* window, int width, int height);
-	void Scroll(GLFWwindow* window, double xoffset, double yoffset);
-	void Key(GLFWwindow* window, int key, int scancode, int action, int mods);
-	void Char(GLFWwindow* window,unsigned int character);
-	void Drop(GLFWwindow* window, int path_count, const char* paths[]);
-	void MouseButton(GLFWwindow* window, int button, int action, int mods);
-}
-
 class Window
 {
 public:

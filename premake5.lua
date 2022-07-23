@@ -82,7 +82,7 @@ end
     files {
         "./thirdparty/imgui/backends/imgui_impl_glfw.cpp",
         "./thirdparty/imgui/backends/imgui_impl_glfw.h",
-        "./thirdparty/tracy/TracyClient.cpp",
+        "./thirdparty/tracy/public/TracyClient.cpp",
         "./thirdparty/EASTL/EASTL.natvis",
         "./src/**.h",   "./src/**.cpp",
         "./src/**.hpp", "./src/**.tpp" }
@@ -107,7 +107,7 @@ end
         "./thirdparty/glfw/include",
         "./thirdparty/imgui",
         "./thirdparty/imnodes",
-        "./thirdparty/tracy",
+        "./thirdparty/tracy/public/tracy",
         "./thirdparty/assimp/include",
         "./thirdparty/irrXML/include",
         "./thirdparty/EASTL/include",

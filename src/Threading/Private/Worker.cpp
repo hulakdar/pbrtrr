@@ -5,14 +5,25 @@
 #include "Util/Debug.h"
 #include "Containers/Array.h"
 
+//#define DEBUG_TICKETS
+
 TArray<DedicatedThreadData> gWorkers;
 
 Ticket EnqueueToWorker(TFunction<void(void)>&& Work)
 {
-	return EnqueueWork(&gWorkers[rand()%gWorkers.size()], MOVE(Work));
+	Ticket Result = EnqueueWork(&gWorkers[rand()%gWorkers.size()], MOVE(Work));
+#ifdef DEBUG_TICKETS
+	WaitForCompletion(Result);
+#endif
+	return Result;
 }
 
-void ParallelFor(u64 Size, TFunction<void(u64, u64)>&& Work)
+u64 NumberOfWorkers()
+{
+	return gWorkers.size();
+}
+
+void ParallelFor(u64 Size, TFunction<void(u64, u64, u64)>&& Work)
 {
 	u64 WorkDivisor = Size / (gWorkers.size() + 1);
 	u64 Begin = 0;
@@ -24,9 +35,9 @@ void ParallelFor(u64 Size, TFunction<void(u64, u64)>&& Work)
 		for (u64 i = 0; i < gWorkers.size(); ++i)
 		{
 			Tickets[i] = EnqueueWork(&gWorkers[i],
-				[Begin, End, &Work]()
+				[i, Begin, End, &Work]()
 				{
-					Work(Begin, End);
+					Work(i, Begin, End);
 				}
 			);
 			Begin += WorkDivisor;
@@ -36,7 +47,7 @@ void ParallelFor(u64 Size, TFunction<void(u64, u64)>&& Work)
 	}
 	if (Begin != Size)
 	{
-		Work(Begin, Size);
+		Work(gWorkers.size(), Begin, Size);
 	}
 	for (auto It : Tickets)
 	{

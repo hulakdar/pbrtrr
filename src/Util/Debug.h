@@ -9,7 +9,7 @@
 			__debugbreak(); \
 		}
 
-#ifndef RELEASE
+#if !defined(RELEASE)
 # define CHECK(x, msg) \
 		do {           \
 			if (!(x))  \

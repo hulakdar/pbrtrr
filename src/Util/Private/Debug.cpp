@@ -42,7 +42,7 @@ void StartDebugSystem()
 	// for printing to cout
 	std::cout.rdbuf(&gStream);
 	std::wcout.rdbuf(&gWStream);
-#if !defined(BUILD_RELEASE) && !defined(BUILD_PROFILE)
+#if !defined(RELEASE) && !defined(PROFILE)
 	// d3d12 debug layer
 	{
 		ComPtr<ID3D12Debug3> debugInterface;

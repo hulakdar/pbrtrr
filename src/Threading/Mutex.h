@@ -3,6 +3,9 @@
 #include <shared_mutex>
 #include <Tracy.hpp>
 #include "Containers/UniquePtr.h"
+#include "Util/Debug.h"
+
+DISABLE_OPTIMIZATION
 
 using Mutex      = std::mutex;
 

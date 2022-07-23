@@ -5,12 +5,15 @@
 #include "Util/Util.h"
 #include <windows.h>
 #include <unordered_set>
+#include <Util/Debug.h>
 
-TracyLockable(Mutex, gTicketsLock);
-std::atomic<uint64_t> gCurrentTicketId;
+DISABLE_OPTIMIZATION
 
-TracyLockable(Mutex, gTicketsWakeupLock);
-std::unordered_set<uint64_t> gDedicatedThreadData;
+std::atomic<u16> gCurrentTicketId;
+std::atomic<u64> gSharedTickets[1024];
+
+//TracyLockable(Mutex, gTicketsLock);
+//std::unordered_set<uint64_t> gDedicatedThreadData;
 
 namespace {
 	bool ThreadShouldExit(DedicatedThreadData *DedicatedThread)
@@ -21,9 +24,21 @@ namespace {
 	void PopAndExecute(DedicatedThreadData *DedicatedThread)
 	{
 		UniqueMovableLock Lock(DedicatedThread->ItemsLock);
-		DedicatedThread->WakeUp->wait(Lock, [DedicatedThread]() {
-			return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.empty();
-		});
+		while (true)
+		{
+			bool HasWork = DedicatedThread->WakeUp->wait_for(Lock, std::chrono::microseconds(DedicatedThread->SleepMicrosecondsWhenIdle), [DedicatedThread]() {
+				return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.empty();
+			});
+
+			if (DedicatedThread->ThreadShouldStop || HasWork)
+			{
+				break;
+			}
+
+			Lock.unlock();
+			StealWork();
+			Lock.lock();
+		}
 
 		if (DedicatedThread->WorkItems.empty())
 		{
@@ -38,7 +53,7 @@ namespace {
 
 	void DedicatedThreadProc(DedicatedThreadData *DedicatedThread, String ThreadName)
 	{
-		tracy::SetThreadName(ThreadName.data());
+		tracy::SetThreadName(ThreadName.c_str());
 		while (!DedicatedThread->ThreadShouldStop)
 		{
 			PopAndExecute(DedicatedThread);
@@ -52,8 +67,17 @@ void ExecuteItem(WorkItem& Item)
 		ZoneScopedN("Threaded work item");
 		Item.Work();
 	}
-	ScopedLock AutoLock(gTicketsLock);
-	gDedicatedThreadData.erase(Item.WorkDoneTicket.Value);
+
+	u64 TicketID = Item.WorkDoneTicket.Value;
+	u64 Shift = TicketID % 64;
+	u64 Mask = (1ULL << Shift);
+
+	u64 Test = (gSharedTickets[TicketID / 64].load() & Mask);
+	CHECK(Test == Mask, "Ticket already cleared?!");
+
+	gSharedTickets[TicketID / 64] &= ~(Mask);
+	//ScopedLock AutoLock(gTicketsLock);
+	//CHECK(gDedicatedThreadData.erase(Item.WorkDoneTicket.Value) > 0, "didn't find the value");
 }
 
 void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName)
@@ -71,8 +95,11 @@ void StopDedicatedThread(DedicatedThreadData* DedicatedThread)
 
 bool WorkIsDone(Ticket WorkDoneTicket)
 {
-	ScopedLock AutoLock(gTicketsLock);
-	return gDedicatedThreadData.find(WorkDoneTicket.Value) == gDedicatedThreadData.end();
+	u64 Shift = WorkDoneTicket.Value % 64;
+	u64 Mask = (1ULL << Shift);
+	return (gSharedTickets[WorkDoneTicket.Value / 64] & Mask) == 0;
+	//ScopedLock AutoLock(gTicketsLock);
+	//return gDedicatedThreadData.find(WorkDoneTicket.Value) == gDedicatedThreadData.end();
 }
 
 void WaitForCompletion(Ticket WorkDoneTicket)
@@ -81,7 +108,7 @@ void WaitForCompletion(Ticket WorkDoneTicket)
 	{
 		if (!StealWork())
 		{
-			//::SleepEx(1, true);
+			//std::this_thread::sleep_for(std::chrono::microseconds(10));
 		}
 	}
 }
@@ -91,17 +118,22 @@ Ticket EnqueueWork(DedicatedThreadData *DedicatedThread, TFunction<void(void)>&&
 	ZoneScoped;
 	uint64_t TicketID = -1;
 	{
-		ScopedLock TicketAutoLock(gTicketsLock);
-		TicketID = gCurrentTicketId.fetch_add(1);
+		TicketID = gCurrentTicketId++;
+
+		u64 Shift = TicketID % 64;
+		u64 Mask = (1ULL << Shift);
+		CHECK((gSharedTickets[TicketID / 64] & Mask) == 0, "Ticket already set?!");
+		gSharedTickets[TicketID / 64] |= (Mask);
+
+		//ScopedLock TicketAutoLock(gTicketsLock);
+		//gDedicatedThreadData.emplace(TicketID);
 	}
 	{
 		ScopedMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
 		DedicatedThread->WorkItems.push({ MOVE(Work), Ticket {TicketID} });
+		DedicatedThread->WakeUp->notify_one();
 	}
-	DedicatedThread->WakeUp->notify_one();
 
-	ScopedLock TicketAutoLock(gTicketsLock);
-	gDedicatedThreadData.emplace(TicketID);
 	return Ticket{ TicketID };
 }
 

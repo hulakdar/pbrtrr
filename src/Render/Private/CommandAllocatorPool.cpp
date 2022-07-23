@@ -14,7 +14,6 @@ struct WorkingAllocator
 	ComPtr<ID3D12CommandAllocator> Allocator;
 };
 
-TMap<ID3D12CommandAllocator*, D3D12_COMMAND_LIST_TYPE> gAllocatorTypes;
 TQueue<WorkingAllocator> gInFlightAllocators[4];
 TracyLockable(Mutex, gFreeAllocatorsLock);
 
@@ -31,7 +30,6 @@ ComPtr<ID3D12CommandAllocator> GetCommandAllocator(D3D12_COMMAND_LIST_TYPE Type,
 		else
 		{
 			Result = CreateCommandAllocator(Type);
-			gAllocatorTypes[Result.Get()] = Type;
 		}
 	}
 	CHECK(Result.Get(), "!?");

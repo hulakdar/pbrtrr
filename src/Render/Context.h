@@ -68,6 +68,7 @@ ID3D12Device*       GetGraphicsDevice();
 
 void PresentCurrentBackBuffer();
 void Submit(D3D12CmdList& CmdList, u64 CurrentFrameID);
+void Submit(TArray<D3D12CmdList>& CmdLists, u64 CurrentFrameID);
 void CreateBackBufferResources(System::Window& Window);
 
 enum ShaderType

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include "external/d3dx12.h"
 
 #ifndef RELEASE
 static wchar_t g_ScratchNameBuffer[1024];

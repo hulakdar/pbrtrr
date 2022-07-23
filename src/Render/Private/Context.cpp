@@ -7,7 +7,6 @@
 #include "Util/Math.h"
 #include "Util/Debug.h"
 #include "Util/Util.h"
-#include "external/d3dx12.h"
 #include "Threading/Mutex.h"
 #include "System/Window.h"
 
@@ -39,25 +38,20 @@ ComPtr<ID3D12RootSignature>     gComputeRootSignature;
 ComPtr<ID3D12CommandQueue>      gGraphicsQueue;
 ComPtr<ID3D12CommandQueue>      gComputeQueue;
 ComPtr<ID3D12CommandQueue>      gCopyQueue;
-ComPtr<IDXGISwapChain2>         gSwapChain;
 ComPtr<IDXGIFactory4>           gDXGIFactory;
 ComPtr<ID3D12Device>            gDevice;
 
 D3D12CmdList gUploadCmdList;
 
-HANDLE	gSwapChainWaitableObject = nullptr;
-
 UINT gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES];
 
 TArray<D3D12_RESOURCE_BARRIER> gUploadTransitions;
-
 TArray<PooledBuffer> gUploadBuffers;
-
 TracyLockable(Mutex, gUploadMutex);
 
-TextureData gBackBuffers[BACK_BUFFER_COUNT] = {};
-
-uint64_t				mCurrentUploadFenceValue = 0;
+ComPtr<IDXGISwapChain2> gSwapChain;
+TextureData             gBackBuffers[BACK_BUFFER_COUNT] = {};
+HANDLE                  gSwapChainWaitableObject = nullptr;
 
 GraphicsDeviceCapabilities gDeviceCaps;
 
@@ -401,7 +395,7 @@ ComPtr<ID3D12Device> CreateDevice()
 	D3D_FEATURE_LEVEL FeatureLevel = D3D_FEATURE_LEVEL_11_0;
 #ifndef TEST_WARP
 	D3D_FEATURE_LEVEL FeatureLevels[] = {
-        D3D_FEATURE_LEVEL_12_2,
+		D3D_FEATURE_LEVEL_12_2,
         D3D_FEATURE_LEVEL_12_1,
         D3D_FEATURE_LEVEL_12_0,
         D3D_FEATURE_LEVEL_11_1,
@@ -446,7 +440,7 @@ ComPtr<ID3D12Device> CreateDevice()
 	}
 
 	SetupDeviceCapabilities(FeatureLevel, Result.Get());
-//#ifdef _DEBUG
+#if !defined(PROFILE) && !defined(RELEASE)
 	ComPtr<ID3D12InfoQueue> pInfoQueue;
 	if (SUCCEEDED(Result.As(&pInfoQueue)))
 	{
@@ -480,7 +474,7 @@ ComPtr<ID3D12Device> CreateDevice()
  
 		VALIDATE(pInfoQueue->PushStorageFilter(&NewFilter));
 	}
-//#endif
+#endif
 
 	return Result;
 }
@@ -652,7 +646,7 @@ void InitRender(System::Window& Window)
 
 void UploadTextureData(TextureData& TexData, const uint8_t *RawData, u32 RawDataSize)
 {
-	ZoneScoped;
+	//ZoneScoped;
 
 	D3D12_SUBRESOURCE_DATA SrcData = {};
 	SrcData.pData = RawData;
@@ -709,7 +703,7 @@ ComPtr<ID3D12Fence> CreateFence(uint64_t InitialValue, D3D12_FENCE_FLAGS Flags)
 
 void FlushUpload(u64 CurrentFrameID)
 {
-	ZoneScoped;
+	//ZoneScoped;
 	ScopedLock Lock(gUploadMutex);
 	if (gUploadTransitions.empty())
 	{
@@ -734,7 +728,7 @@ void FlushUpload(u64 CurrentFrameID)
 
 void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Size, D3D12_RESOURCE_STATES TargetState)
 {
-	ZoneScoped;
+	//ZoneScoped;
 
 	D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 		Destination,
@@ -770,6 +764,8 @@ void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Si
 void PresentCurrentBackBuffer()
 {
 	ZoneScoped;
+
+	PIXScopedEvent(gGraphicsQueue.Get(), __LINE__, "Present");
 
 	//ScopedLock Lock(gPresentLock);
 	VALIDATE(gSwapChain->Present(gSyncInterval, gPresentFlags));
@@ -938,7 +934,7 @@ ComPtr<ID3D12GraphicsCommandList> CreateCommandList(ID3D12CommandAllocator* Comm
 
 void CreateResourceForTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, D3D12_RESOURCE_STATES InitialState, D3D12_CLEAR_VALUE* ClearValue)
 {
-	ZoneScoped;
+	//ZoneScoped;
 	D3D12_RESOURCE_DESC TextureDesc = CD3DX12_RESOURCE_DESC::Tex2D(
 		(DXGI_FORMAT)TexData.Format,
 		TexData.Width, TexData.Height,
@@ -997,7 +993,7 @@ ID3D12Resource* GetBackBufferResource(UINT Index)
 
 void BindDescriptors(ID3D12GraphicsCommandList* CommandList, TextureData& Tex)
 {
-	ZoneScoped;
+	//ZoneScoped;
 	ID3D12DescriptorHeap* DescriptorHeaps[] = {
 		gGeneralDescriptorHeap.Get()
 	};
@@ -1110,6 +1106,7 @@ void UpdateRenderTargetViews(unsigned Width, unsigned Height)
 
 void Submit(D3D12CmdList& CmdList, uint64_t CurrentFrameID)
 {
+	ZoneScopedN("Submit one command list");
 	ID3D12CommandList* CommandLists[] = {
 		CmdList.Get()
 	};
@@ -1129,6 +1126,39 @@ void Submit(D3D12CmdList& CmdList, uint64_t CurrentFrameID)
 		DEBUG_BREAK();
 	}
 	DiscardCommandList(CmdList, CurrentFrameID);
+}
+
+void Submit(TArray<D3D12CmdList>& CmdLists, u64 CurrentFrameID)
+{
+	ZoneScopedN("Submit multiple command lists");
+
+	TArray<ID3D12CommandList*> CommandLists;
+	D3D12_COMMAND_LIST_TYPE Type = CmdLists[0].Type;
+	for (auto& CmdList : CmdLists)
+	{
+		CmdList->Close();
+		CommandLists.push_back(CmdList.Get());
+		CHECK(CmdList.Type == Type, "Mixed command lists");
+	}
+
+	switch (Type)
+	{
+	case D3D12_COMMAND_LIST_TYPE_DIRECT:
+		gGraphicsQueue->ExecuteCommandLists(CommandLists.size(), CommandLists.data());
+		break;
+	case D3D12_COMMAND_LIST_TYPE_COMPUTE:
+		gComputeQueue->ExecuteCommandLists(CommandLists.size(), CommandLists.data());
+		break;
+	case D3D12_COMMAND_LIST_TYPE_COPY:
+		gCopyQueue->ExecuteCommandLists(CommandLists.size(), CommandLists.data());
+		break;
+	default:
+		DEBUG_BREAK();
+	}
+	for (auto& CmdList : CmdLists)
+	{
+		DiscardCommandList(CmdList, CurrentFrameID);
+	}
 }
 
 void CreateBackBufferResources(System::Window& Window)
@@ -1175,32 +1205,34 @@ bool IsSwapChainReady()
 	return WaitForSingleObjectEx(gSwapChainWaitableObject, 0, true) == WAIT_OBJECT_0;
 }
 
-u16 gCurrentRenderTargetIndex = BACK_BUFFER_COUNT;
+std::atomic<u16> gCurrentRenderTargetIndex = BACK_BUFFER_COUNT;
 void CreateRTV(TextureData& TexData)
 {
-	CHECK(gCurrentRenderTargetIndex < RTV_HEAP_SIZE, "Too much RTV descriptors. Need new plan.");
+	u16 Index = gCurrentRenderTargetIndex++;
+	CHECK(Index < RTV_HEAP_SIZE, "Too much RTV descriptors. Need new plan.");
 
-	ZoneScoped;
+	//ZoneScoped;
 	D3D12_RENDER_TARGET_VIEW_DESC RTVDesc = {};
 	RTVDesc.Format = (DXGI_FORMAT)TexData.Format;
 	RTVDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
 
 	CD3DX12_CPU_DESCRIPTOR_HANDLE Handle(
 		gRTVDescriptorHeap->GetCPUDescriptorHandleForHeapStart(),
-		gCurrentRenderTargetIndex,
+		Index,
 		gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_RTV]
 	);
 	gDevice->CreateRenderTargetView(GetTextureResource(TexData.ID), &RTVDesc, Handle);
 
-	TexData.RTV = gCurrentRenderTargetIndex++;
+	TexData.RTV = Index;
 }
 
-u16 gCurrentGeneralIndex = 0;
+std::atomic<u16> gCurrentGeneralIndex = 0;
 void CreateSRV(TextureData& TexData)
 {
-	CHECK(gCurrentGeneralIndex < GENERAL_HEAP_SIZE, "Too much SRV descriptors. Need new plan.");
+	u16 Index = gCurrentGeneralIndex++;
+	CHECK(Index < GENERAL_HEAP_SIZE, "Too much SRV descriptors. Need new plan.");
 
-	ZoneScoped;
+	//ZoneScoped;
 	D3D12_SHADER_RESOURCE_VIEW_DESC SRVDesc = {};
 	SRVDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
 	SRVDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
@@ -1208,10 +1240,10 @@ void CreateSRV(TextureData& TexData)
 	SRVDesc.Texture2D.MipLevels = 1;
 
 	D3D12_CPU_DESCRIPTOR_HANDLE Handle = gGeneralDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-	Handle.ptr += gCurrentGeneralIndex * gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV];
+	Handle.ptr += Index * gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV];
 	gDevice->CreateShaderResourceView(GetTextureResource(TexData.ID), &SRVDesc, Handle);
 
-	TexData.SRV = gCurrentGeneralIndex++;
+	TexData.SRV = Index;
 }
 
 // returns index in SRV heap
@@ -1220,7 +1252,7 @@ void CreateUAV(TextureData& TexData)
 {
 	CHECK(gCurrentGeneralIndex < GENERAL_HEAP_SIZE, "Too much SRV descriptors. Need new plan.");
 
-	ZoneScoped;
+	//ZoneScoped;
 	D3D12_UNORDERED_ACCESS_VIEW_DESC UAVDesc = {};
 	UAVDesc.Format = (DXGI_FORMAT)TexData.Format;
 	UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -1232,11 +1264,12 @@ void CreateUAV(TextureData& TexData)
 	TexData.UAV = gCurrentGeneralIndex++;
 }
 
-u16 gCurrentDSVIndex = 0;
+std::atomic<u16> gCurrentDSVIndex = 0;
 void CreateDSV(TextureData& TexData)
 {
-	CHECK(gCurrentDSVIndex < DSV_HEAP_SIZE, "Too much DSV descriptors. Need new plan.");
-	ZoneScoped;
+	u16 Index = gCurrentDSVIndex++;
+	CHECK(Index < DSV_HEAP_SIZE, "Too much DSV descriptors. Need new plan.");
+	//ZoneScoped;
 
 	D3D12_DEPTH_STENCIL_VIEW_DESC Desc = {};
 	Desc.Format = (DXGI_FORMAT)TexData.Format;
@@ -1245,5 +1278,5 @@ void CreateDSV(TextureData& TexData)
 	CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(gDSVDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 	gDevice->CreateDepthStencilView(GetTextureResource(TexData.ID), &Desc, dsvHandle);
 
-	TexData.DSV = gCurrentDSVIndex++;
+	TexData.DSV = Index;
 }

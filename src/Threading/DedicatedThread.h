@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Common.h"
 #include "Containers/Function.h"
 #include "Containers/String.h"
 #include "Containers/Queue.h"
@@ -28,10 +29,12 @@ struct DedicatedThreadData
 	TQueue<WorkItem> WorkItems;
 	String ThreadName;
 	Thread ActualThread;
+	u64 SleepMicrosecondsWhenIdle;
 
 	DedicatedThreadData()
 		: WakeUp(new std::condition_variable_any())
 	{
+		SleepMicrosecondsWhenIdle = 80 + rand() % 40;
 	}
 };
 

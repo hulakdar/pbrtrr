@@ -12,6 +12,8 @@
 TQueue<ComPtr<ID3D12GraphicsCommandList>> gCommandLists[4];
 TracyLockable(Mutex, gCommandListLock);
 
+std::atomic<u64> gListsInFlight = 0;
+
 D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameID)
 {
 	D3D12CmdList Result;
@@ -31,11 +33,13 @@ D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameI
 		Result.CommandList = CreateCommandList(Result.CommandAllocator.Get(), Type);
 	}
 	VALIDATE(Result.CommandList->Reset(Result.CommandAllocator.Get(), nullptr));
+	gListsInFlight++;
 	return Result;
 }
 
 void DiscardCommandList(D3D12CmdList& CmdList, uint64_t CurrentFrameID)
 {
+	gListsInFlight--;
 	DiscardCommandAllocator(CmdList.CommandAllocator, CmdList.Type, CurrentFrameID);
 
 	ScopedLock AutoLock(gCommandListLock);

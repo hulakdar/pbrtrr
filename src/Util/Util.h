@@ -20,8 +20,9 @@ void WriteAndAdvance(uint8_t*& DataPtr, const T& Data)
 	DataPtr += sizeof(T);
 }
 
-template <typename T, int Count>
-int ArrayCount(T (&)[Count]) { return Count; }
+//template <typename T, int Count>
+//int ArrayCount(T (&)[Count]) { return Count; }
+#define ArrayCount(x) _countof(x)
 
 template <typename T, typename C>
 T& RandomElement(C& Container) { return Container[rand() % Container.size()]; }
