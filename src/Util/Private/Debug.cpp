@@ -2,6 +2,7 @@
 #include "Util/Util.h"
 #include "Containers/ComPtr.h"
 #include "external/d3dx12.h"
+#include "Render/Context.h"
 
 #include <iostream>
 #include <sstream>
@@ -52,6 +53,16 @@ void StartDebugSystem()
 		debugInterface->SetEnableSynchronizedCommandQueueValidation(true);
 	}
 #endif
+#if !defined (RELEASE)
+	{
+		ComPtr<ID3D12DeviceRemovedExtendedDataSettings> pDredSettings;
+		VALIDATE(D3D12GetDebugInterface(IID_PPV_ARGS(&pDredSettings)));
+
+		// Turn on auto-breadcrumbs and page fault reporting.
+		pDredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+		pDredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+	}
+#endif
 }
 
 namespace Debug {
@@ -62,6 +73,27 @@ namespace Debug {
 
 		std::string ErrorText = std::system_category().message(Result);
 		Debug::Print("VALIDATE caught error: ", ErrorText);
+		if (Result == DXGI_ERROR_DEVICE_REMOVED)
+		{
+			Result = GetGraphicsDevice()->GetDeviceRemovedReason();
+			ErrorText = std::system_category().message(Result);
+			Debug::Print("DeviceRemoval reason: ", ErrorText);
+
+			ComPtr<ID3D12DeviceRemovedExtendedData> pDred;
+			VALIDATE(GetGraphicsDevice()->QueryInterface(IID_PPV_ARGS(&pDred)));
+			D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT DredAutoBreadcrumbsOutput;
+			D3D12_DRED_PAGE_FAULT_OUTPUT DredPageFaultOutput;
+			VALIDATE(pDred->GetAutoBreadcrumbsOutput(&DredAutoBreadcrumbsOutput));
+			VALIDATE(pDred->GetPageFaultAllocationOutput(&DredPageFaultOutput));
+			if (DredAutoBreadcrumbsOutput.pHeadAutoBreadcrumbNode)
+			{
+				DEBUG_BREAK();
+			}
+			if (DredPageFaultOutput.PageFaultVA)
+			{
+				DEBUG_BREAK();
+			}
+		}
 		return false;
 	}
 }

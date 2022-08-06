@@ -102,12 +102,10 @@ void System::Window::Init()
 	glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
 	glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
 	 
-	mSize.x = mode->width;
-	mSize.y = mode->height;
+	//mSize.x = mode->width;
+	//mSize.y = mode->height;
 
-	GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "My Title", monitor, NULL);
-	mHandle = window;
-	//mHandle = glfwCreateWindow(mSize.x, mSize.y, "pbrtrr", nullptr, nullptr);
+	mHandle = glfwCreateWindow(mSize.x, mSize.y, "pbrtrr", nullptr, NULL);
 	CHECK(mHandle != nullptr, "GLFW failed to create a window.");
 
 	mHwnd = glfwGetWin32Window(mHandle);

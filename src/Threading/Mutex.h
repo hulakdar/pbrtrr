@@ -11,13 +11,14 @@ using Mutex      = std::mutex;
 
 struct MovableMutex
 {
-	struct TracyLockableLock
+	struct TracyLockableMutex
 	{
 		TracyLockable(Mutex, Lock);
+		//Mutex Lock;
 	};
-	TUniquePtr<TracyLockableLock> Ptr;
+	TUniquePtr<TracyLockableMutex> Ptr;
 	
-	MovableMutex() : Ptr(new TracyLockableLock()) {}
+	MovableMutex() : Ptr(new TracyLockableMutex()) {}
 
 	void lock() { Ptr->Lock.lock(); }
 	void unlock() { Ptr->Lock.unlock(); }
@@ -26,10 +27,12 @@ struct MovableMutex
 
 using ScopedLock = std::lock_guard<LockableBase(Mutex)>;
 using UniqueLock = std::unique_lock<LockableBase(Mutex)>;
+//using ScopedLock = std::lock_guard<Mutex>;
+//using UniqueLock = std::unique_lock<Mutex>;
 
 using ScopedMovableLock = std::lock_guard<MovableMutex>;
 using UniqueMovableLock = std::unique_lock<MovableMutex>;
 
 using RWLock     = std::shared_mutex;
-using WriteLock  = std::unique_lock<RWLock>;
-using ReadLock   = std::shared_lock<RWLock>;
+using WriteLock  = std::unique_lock<SharedLockableBase(RWLock)>;
+using ReadLock   = std::shared_lock<SharedLockableBase(RWLock)>;

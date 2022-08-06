@@ -3,20 +3,26 @@
 #include "Util/Util.h"
 #include "..\RenderThread.h"
 
-DedicatedThreadData	gRenderDedicatedThreadData;
+DedicatedThreadData	*gRenderDedicatedThreadData = new DedicatedThreadData();
 
 void StartRenderThread()
 {
-	StartDedicatedThread(&gRenderDedicatedThreadData, String("RenderThread"));
+	StartDedicatedThread(gRenderDedicatedThreadData, String("RenderThread"), 0x2);
 }
 
 void StopRenderThread()
 {
-	StopDedicatedThread(&gRenderDedicatedThreadData);
+	StopDedicatedThread(gRenderDedicatedThreadData);
 }
 
-Ticket EnqueueRenderThreadWork(TFunction<void(void)>&& RenderThreadWork)
+void EnqueueToRenderThread(TFunction<void(void)>&& RenderThreadWork)
 {
 	ZoneScoped;
-	return EnqueueWork(&gRenderDedicatedThreadData, MOVE(RenderThreadWork));
+	EnqueueWork(gRenderDedicatedThreadData, MOVE(RenderThreadWork));
+}
+
+Ticket EnqueueToRenderThreadWithTicket(TFunction<void(void)>&& RenderThreadWork)
+{
+	ZoneScoped;
+	return EnqueueWorkWithTicket(gRenderDedicatedThreadData, MOVE(RenderThreadWork));
 }

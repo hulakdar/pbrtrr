@@ -4,4 +4,5 @@
 
 void StartRenderThread();
 void StopRenderThread();
-Ticket EnqueueRenderThreadWork(TFunction<void(void)>&&);
+void EnqueueToRenderThread(TFunction<void(void)>&&);
+Ticket EnqueueToRenderThreadWithTicket(TFunction<void(void)>&& RenderThreadWork);

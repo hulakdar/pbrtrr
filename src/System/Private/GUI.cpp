@@ -21,18 +21,30 @@ TextureData& GetGUIFont()
 	return gFontTexData;
 }
 
+void* Allocate(size_t size, void*)
+{
+	return new u8[size];
+}
+
+void Deallocate(void* ptr, void*)
+{
+	delete[] ptr;
+}
+
 void InitGUI(const System::Window& WindowHandle)
 {
 	ImGui::CreateContext();
 	ImNodes::CreateContext();
 	ImNodes::GetIO().AltMouseButton = ImGuiMouseButton_Right;
 
+	ImGui::SetAllocatorFunctions(&Allocate, Deallocate);
+
 	ImGui_ImplGlfw_InitForOther(WindowHandle.mHandle, false);
 
 	ImGuiIO& io = ImGui::GetIO();
 	io.DisplaySize = ImVec2((float)WindowHandle.mSize.x, (float)WindowHandle.mSize.y);
 
-	EnqueueRenderThreadWork([]() {
+	EnqueueToRenderThread([]() {
 		ImGuiIO& io = ImGui::GetIO();
 		io.Fonts->AddFontFromFileTTF("content/fonts/Roboto.ttf", 20);
 		uint8_t* Data = nullptr;

@@ -7,6 +7,7 @@
 
 #include "Containers/ArrayView.h"
 #include "Containers/String.h"
+#include "Containers/Function.h"
 
 bool IsSwapChainReady();
 void WaitForFenceValue(ID3D12Fence* Fence, u64 FenceValue, void* Event);
@@ -15,6 +16,7 @@ u64 Signal(ID3D12CommandQueue* CommandQueue, ID3D12Fence* Fence, u64& FenceValue
 
 void UploadTextureData(TextureData& TexData, const u8* RawData, u32 RawDataSize);
 void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Size, D3D12_RESOURCE_STATES TargetState);
+void UploadBufferData(ID3D12Resource* Destination, u64 Size, D3D12_RESOURCE_STATES TargetState, TFunction<void(void*, u64)> UploadFunction);
 void FlushUpload(u64 CurrentFrameID);
 
 void CreateRTV(TextureData& TexData);

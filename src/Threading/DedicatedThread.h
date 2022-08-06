@@ -11,12 +11,13 @@
 #include <thread>
 #include <condition_variable>
 
-struct Ticket { uint64_t Value; };
+struct Ticket { u8 Value; };
 
 struct WorkItem
 {
 	TFunction<void(void)> Work;
 	Ticket                WorkDoneTicket;
+	bool                  TicketValid;
 };
 
 void ExecuteItem(WorkItem& Item);
@@ -38,10 +39,11 @@ struct DedicatedThreadData
 	}
 };
 
-void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName);
+void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName, u64 AffinityMask);
 void StopDedicatedThread(DedicatedThreadData* DedicatedThread);
 
-Ticket EnqueueWork(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work);
+void   EnqueueWork(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work);
+Ticket EnqueueWorkWithTicket(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work);
 bool   WorkIsDone(Ticket WorkDoneTicket);
 void   WaitForCompletion(Ticket WorkDoneTicket);
 void   ExecutePendingWork(DedicatedThreadData* DedicatedThread);

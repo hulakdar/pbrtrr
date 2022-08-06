@@ -9,11 +9,8 @@
 
 DISABLE_OPTIMIZATION
 
-std::atomic<u16> gCurrentTicketId;
-std::atomic<u64> gSharedTickets[1024];
-
-//TracyLockable(Mutex, gTicketsLock);
-//std::unordered_set<uint64_t> gDedicatedThreadData;
+std::atomic<u8>  gCurrentTicketId;
+std::atomic<u64> gSharedTickets[4];
 
 namespace {
 	bool ThreadShouldExit(DedicatedThreadData *DedicatedThread)
@@ -26,9 +23,11 @@ namespace {
 		UniqueMovableLock Lock(DedicatedThread->ItemsLock);
 		while (true)
 		{
-			bool HasWork = DedicatedThread->WakeUp->wait_for(Lock, std::chrono::microseconds(DedicatedThread->SleepMicrosecondsWhenIdle), [DedicatedThread]() {
-				return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.empty();
-			});
+			bool HasWork = DedicatedThread->WakeUp->wait_for(Lock, std::chrono::microseconds(DedicatedThread->SleepMicrosecondsWhenIdle),
+				[DedicatedThread]() {
+					return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.empty();
+				}
+			);
 
 			if (DedicatedThread->ThreadShouldStop || HasWork)
 			{
@@ -51,7 +50,7 @@ namespace {
 		ExecuteItem(Item);
 	}
 
-	void DedicatedThreadProc(DedicatedThreadData *DedicatedThread, String ThreadName)
+	void DedicatedThreadProc(DedicatedThreadData* DedicatedThread, String ThreadName)
 	{
 		tracy::SetThreadName(ThreadName.c_str());
 		while (!DedicatedThread->ThreadShouldStop)
@@ -68,21 +67,24 @@ void ExecuteItem(WorkItem& Item)
 		Item.Work();
 	}
 
-	u64 TicketID = Item.WorkDoneTicket.Value;
-	u64 Shift = TicketID % 64;
-	u64 Mask = (1ULL << Shift);
+	if (Item.TicketValid)
+	{
+		u64 TicketID = Item.WorkDoneTicket.Value;
+		u64 Shift = TicketID % 64;
+		u64 Mask = (1ULL << Shift);
 
-	u64 Test = (gSharedTickets[TicketID / 64].load() & Mask);
-	CHECK(Test == Mask, "Ticket already cleared?!");
+		u64 Test = (gSharedTickets[TicketID / 64].load() & Mask);
+		CHECK(Test == Mask, "Ticket already cleared?!");
 
-	gSharedTickets[TicketID / 64] &= ~(Mask);
-	//ScopedLock AutoLock(gTicketsLock);
-	//CHECK(gDedicatedThreadData.erase(Item.WorkDoneTicket.Value) > 0, "didn't find the value");
+		gSharedTickets[TicketID / 64] &= ~(Mask);
+	}
 }
 
-void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName)
+void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName, u64 AffinityMask)
 {
 	DedicatedThread->ActualThread = Thread(DedicatedThreadProc, DedicatedThread, ThreadName);
+	auto handle = DedicatedThread->ActualThread.native_handle();
+	SetThreadAffinityMask(handle, AffinityMask);
 }
 
 void StopDedicatedThread(DedicatedThreadData* DedicatedThread)
@@ -98,8 +100,6 @@ bool WorkIsDone(Ticket WorkDoneTicket)
 	u64 Shift = WorkDoneTicket.Value % 64;
 	u64 Mask = (1ULL << Shift);
 	return (gSharedTickets[WorkDoneTicket.Value / 64] & Mask) == 0;
-	//ScopedLock AutoLock(gTicketsLock);
-	//return gDedicatedThreadData.find(WorkDoneTicket.Value) == gDedicatedThreadData.end();
 }
 
 void WaitForCompletion(Ticket WorkDoneTicket)
@@ -113,24 +113,34 @@ void WaitForCompletion(Ticket WorkDoneTicket)
 	}
 }
 
-Ticket EnqueueWork(DedicatedThreadData *DedicatedThread, TFunction<void(void)>&& Work)
+void EnqueueWork(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work)
+{
+	ScopedMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
+	DedicatedThread->WorkItems.push({ MOVE(Work), Ticket {42}, false });
+	DedicatedThread->WakeUp->notify_one();
+}
+
+Ticket EnqueueWorkWithTicket(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work)
 {
 	ZoneScoped;
-	uint64_t TicketID = -1;
+	u8 TicketID = 0;
+
+	while (true)
 	{
 		TicketID = gCurrentTicketId++;
 
 		u64 Shift = TicketID % 64;
 		u64 Mask = (1ULL << Shift);
-		CHECK((gSharedTickets[TicketID / 64] & Mask) == 0, "Ticket already set?!");
-		gSharedTickets[TicketID / 64] |= (Mask);
-
-		//ScopedLock TicketAutoLock(gTicketsLock);
-		//gDedicatedThreadData.emplace(TicketID);
+		if ((gSharedTickets[TicketID / 64] & Mask) == 0)
+		{
+			gSharedTickets[TicketID / 64] |= (Mask);
+			break;
+		}
 	}
+
 	{
 		ScopedMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
-		DedicatedThread->WorkItems.push({ MOVE(Work), Ticket {TicketID} });
+		DedicatedThread->WorkItems.push({ MOVE(Work), Ticket {TicketID}, true });
 		DedicatedThread->WakeUp->notify_one();
 	}
 

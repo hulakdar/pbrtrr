@@ -16,6 +16,7 @@ struct WorkingAllocator
 
 TQueue<WorkingAllocator> gInFlightAllocators[4];
 TracyLockable(Mutex, gFreeAllocatorsLock);
+//Mutex gFreeAllocatorsLock;
 
 ComPtr<ID3D12CommandAllocator> GetCommandAllocator(D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameID)
 {

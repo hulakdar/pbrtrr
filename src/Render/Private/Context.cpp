@@ -8,13 +8,13 @@
 #include "Util/Debug.h"
 #include "Util/Util.h"
 #include "Threading/Mutex.h"
+#include "Threading/MainThread.h"
 #include "System/Window.h"
 
 #include <imgui.h>
 #include <Tracy.hpp>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
-#include <TracyD3D12.hpp>
 
 #include "RenderContextHelpers.h"
 #include "Render/TransientResourcesPool.h"
@@ -48,6 +48,7 @@ UINT gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES];
 TArray<D3D12_RESOURCE_BARRIER> gUploadTransitions;
 TArray<PooledBuffer> gUploadBuffers;
 TracyLockable(Mutex, gUploadMutex);
+//Mutex gUploadMutex;
 
 ComPtr<IDXGISwapChain2> gSwapChain;
 TextureData             gBackBuffers[BACK_BUFFER_COUNT] = {};
@@ -143,7 +144,7 @@ namespace {
 		StringView TargetVersion = GetTargetVersionFromType(Type);
 
 		ComPtr<ID3DBlob> ErrorBlob;
-		StringView Shader = LoadWholeFile(FileName);
+		String Shader = LoadWholeFile(FileName);
 		HRESULT HR = D3DCompile(
 			Shader.data(), Shader.size(),
 			FileName.data(),
@@ -526,7 +527,7 @@ ComPtr<ID3D12RootSignature> CreateRootSignature(ComPtr<ID3DBlob> RootBlob)
 void*    gUploadWaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
 
 uint32_t gPresentFlags = 0;
-uint32_t gSyncInterval = 1;
+uint32_t gSyncInterval = 2;
 
 void InitRender(System::Window& Window)
 {
@@ -641,7 +642,7 @@ void InitRender(System::Window& Window)
 
 		gComputeRootSignature = CreateRootSignature(RootBlob);
 	}
-	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, 0);
+	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, 0, L"Upload cmd list");
 }
 
 void UploadTextureData(TextureData& TexData, const uint8_t *RawData, u32 RawDataSize)
@@ -714,22 +715,20 @@ void FlushUpload(u64 CurrentFrameID)
 	gUploadTransitions.clear();
 
 	Submit(gUploadCmdList, CurrentFrameID);
-	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFrameID);
+	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFrameID, L"Upload cmdlist");
 
-	u64 FenceValue = 0;
-	FlushQueue(gGraphicsQueue.Get(), CreateFence(FenceValue).Get(), FenceValue, gUploadWaitEvent);
+	EnqueueDelayedWork([buffers = MOVE(gUploadBuffers)]() mutable {
+		for (auto& Buffer : buffers)
+		{
+			DiscardTransientBuffer(Buffer);
+		}
+	}, CurrentFrameID);
 
-	for (auto& Buffer : gUploadBuffers)
-	{
-		DiscardTransientBuffer(Buffer);
-	}
-	gUploadBuffers.clear();
+	CHECK(gUploadBuffers.empty(), "?");
 }
 
-void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Size, D3D12_RESOURCE_STATES TargetState)
+void UploadBufferData(ID3D12Resource* Destination, u64 Size, D3D12_RESOURCE_STATES TargetState, TFunction<void(void*, u64)> UploadFunction)
 {
-	//ZoneScoped;
-
 	D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 		Destination,
 		D3D12_RESOURCE_STATE_COPY_DEST,
@@ -740,7 +739,7 @@ void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Si
 	{
 		void* Address = nullptr;
 		Destination->Map(0, nullptr, &Address);
-		memcpy(Address, Data, Size);
+		UploadFunction(Address, Size);
 		Destination->Unmap(0, nullptr);
 
 		ScopedLock Lock(gUploadMutex);
@@ -751,13 +750,22 @@ void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Si
 	GetTransientBuffer(UploadBuffer, Size, BUFFER_UPLOAD);
 	u8* UploadBufferAddress = NULL;
 	UploadBuffer->Map(0, nullptr, (void**)&UploadBufferAddress);
-	::memcpy(UploadBufferAddress + UploadBuffer.Offset, Data, Size);
+	UploadFunction(UploadBufferAddress + UploadBuffer.Offset, Size);
 	UploadBuffer->Unmap(0, nullptr);
 	{
 		ScopedLock Lock(gUploadMutex);
 		gUploadCmdList->CopyBufferRegion(Destination, 0, UploadBuffer.Get(), UploadBuffer.Offset, Size);
 		gUploadTransitions.push_back(Barrier);
 	}
+}
+
+void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Size, D3D12_RESOURCE_STATES TargetState)
+{
+	UploadBufferData(Destination, Size, TargetState,
+		[Data](void *GPUAddress, u64 Size) {
+			memcpy(GPUAddress, Data, Size);
+		}
+	);
 }
 
 //TracyLockable(Mutex, gPresentLock);

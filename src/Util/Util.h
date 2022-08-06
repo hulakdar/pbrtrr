@@ -27,7 +27,7 @@ void WriteAndAdvance(uint8_t*& DataPtr, const T& Data)
 template <typename T, typename C>
 T& RandomElement(C& Container) { return Container[rand() % Container.size()]; }
 
-StringView LoadWholeFile(StringView Path);
+String LoadWholeFile(StringView Path);
 
 // size custom literal
 constexpr size_t operator "" _kb(size_t kilobytes) { return kilobytes * 1024; }
