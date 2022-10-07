@@ -11,5 +11,5 @@ struct D3D12CmdList
 	ID3D12GraphicsCommandList* Get() { return CommandList.Get(); }
 };
 
-D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameID, const wchar_t* DebugName);
-void DiscardCommandList(D3D12CmdList& CmdList, uint64_t CurrentFrameID);
+D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, const wchar_t* DebugName);
+void DiscardCommandList(D3D12CmdList& CmdList);

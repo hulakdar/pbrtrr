@@ -11,5 +11,8 @@ using WStringView = eastl::wstring_view;
 String  StringFromFormat(const char   * Format, ...);
 WString StringFromFormat(const wchar_t* Format, ...);
 
+WString ToWide(const StringView& Narrow);
+WString ToWide(const String& Narrow);
+
 bool EndsWith(StringView Word, StringView Suffix);
 

@@ -1,34 +1,12 @@
 #include <Tracy.hpp>
 #include <stdint.h>
-#include <fstream>
 
 #include "Threading/Mutex.h"
-#include "Containers/String.h"
 #include "Containers/Map.h"
 #include "Util/Util.h"
 #include "Util/Debug.h"
 #include "Util/Math.h"
 #include "Common.h"
-
-String LoadWholeFile(StringView Path)
-{
-	ZoneScoped;
-	std::ifstream infile(Path.data(),std::ios::binary);
-	if (!infile.good())
-	{
-		return {};
-	}
-
-	infile.seekg(0, std::ios::end);
-	size_t file_size_in_byte = infile.tellg();
-	String data;
-	data.resize(file_size_in_byte);
-	infile.seekg(0, std::ios::beg);
-	infile.read(&data[0], file_size_in_byte);
-
-	//WriteLock Lock(FileCacheLock);
-	return data;
-}
 
 #ifdef DEBUG
 
@@ -78,8 +56,7 @@ void StompFree(void* InPtr)
 	if(InPtr == nullptr)
 		return;
 
-	AllocationData *AllocDataPtr = reinterpret_cast<AllocationData*>(InPtr);
-	AllocDataPtr--;
+	AllocationData *AllocDataPtr = reinterpret_cast<AllocationData*>(InPtr) - 1;
 
 	// Check that our sentinel is intact.
 	CHECK(AllocDataPtr->Sentinel == SentinelExpectedValue, "There was a memory underrun related to this allocation");
@@ -90,28 +67,28 @@ void StompFree(void* InPtr)
 void* operator new[](std::size_t size, std::align_val_t align)
 {
 	void* ptr = StompMalloc(size, (u32)align);
-	TracyAlloc(ptr, count);
+	TracyAlloc(ptr, size);
 	return ptr;
 }
 
 void* operator new[](size_t size, const char*, int, unsigned, const char*, int)
 {
 	void* ptr = StompMalloc(size, 0);
-	TracyAlloc(ptr, count);
+	TracyAlloc(ptr, size);
 	return ptr;
 }
 
 void* operator new[](size_t size, size_t alignment, size_t, const char*, int, unsigned, const char*, int) 
 {
 	void* ptr = StompMalloc(size, alignment);
-	TracyAlloc(ptr, count);
+	TracyAlloc(ptr, size);
 	return ptr;
 }  
 
 void* operator new(std::size_t size, std::align_val_t align)
 {
 	void* ptr = StompMalloc(size, (u32)align);
-	TracyAlloc(ptr, count);
+	TracyAlloc(ptr, size);
 	return ptr;
 }
 

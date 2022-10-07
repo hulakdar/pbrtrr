@@ -90,10 +90,55 @@ float Dot(const Vec3& A, const Vec3& B)
 	return A.x * B.x + A.y * B.y + A.z * B.z;
 }
 
+#if 1
+
+#include <immintrin.h>
+
+// linear combination:
+// a[0] * B.row[0] + a[1] * B.row[1] + a[2] * B.row[2] + a[3] * B.row[3]
+namespace {
+	__m128 lincomb_SSE(const __m128 &a, const Matrix4 &B)
+	{
+		__m128 result;
+		result = _mm_mul_ps(_mm_shuffle_ps(a, a, 0x00), _mm_load_ps(&B.m00));
+		result = _mm_add_ps(result, _mm_mul_ps(_mm_shuffle_ps(a, a, 0x55), _mm_load_ps(&B.m10)));
+		result = _mm_add_ps(result, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xaa), _mm_load_ps(&B.m20)));
+		result = _mm_add_ps(result, _mm_mul_ps(_mm_shuffle_ps(a, a, 0xff), _mm_load_ps(&B.m30)));
+		return result;
+	}
+
+	// this is the right approach for SSE ... SSE4.2
+	void matmult_SSE(Matrix4 &out, const Matrix4 &A, const Matrix4 &B)
+	{
+		// out_ij = sum_k a_ik b_kj
+		// => out_0j = a_00 * b_0j + a_01 * b_1j + a_02 * b_2j + a_03 * b_3j
+		__m128 out0x = lincomb_SSE(_mm_load_ps(&A.m00), B);
+		__m128 out1x = lincomb_SSE(_mm_load_ps(&A.m10), B);
+		__m128 out2x = lincomb_SSE(_mm_load_ps(&A.m20), B);
+		__m128 out3x = lincomb_SSE(_mm_load_ps(&A.m30), B);
+
+		_mm_store_ps(&out.m00, out0x);
+		_mm_store_ps(&out.m10, out1x);
+		_mm_store_ps(&out.m20, out2x);
+		_mm_store_ps(&out.m30, out3x);
+	}
+}
+
+Matrix4 operator*(const Matrix4& A, const Matrix4& B)
+{
+	Matrix4 Result;
+	matmult_SSE(Result, A, B);
+	return Result;
+}
+
 float Dot(const Vec4& A, const Vec4& B)
 {
-	return A.x * B.x + A.y * B.y + A.z * B.z + A.w * B.w;
+	__m128 VecResult = _mm_dp_ps(_mm_load_ps(&A.x), _mm_load_ps(&B.x), 255);
+	float Result[4];
+	_mm_store_ps(Result, VecResult);
+	return Result[0];
 }
+#else
 
 Matrix4 operator*(const Matrix4& A, const Matrix4& B)
 {
@@ -104,6 +149,22 @@ Matrix4 operator*(const Matrix4& A, const Matrix4& B)
 		Result[i * 4 + j] = Dot(A.Row(i), B.Column(j));
 	}
 	return Matrix4(Result);
+}
+
+float Dot(const Vec4& A, const Vec4& B)
+{
+	return A.x * B.x + A.y * B.y + A.z * B.z + A.w * B.w;
+}
+
+#endif
+
+Vec3 operator-(const Vec3& A, const Vec3& B)
+{
+	return Vec3{
+		A.x - B.x,
+		A.y - B.y,
+		A.z - B.z
+	};
 }
 
 Matrix4 CreatePerspectiveMatrixClassic(float FovInRadians, float AspectRatio, float Near, float Far)

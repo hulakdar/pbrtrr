@@ -55,6 +55,8 @@ using Vec2h = TVec2<half>;
 using Vec3h = TVec3<half>;
 using Vec4h = TVec4<half>;
 
+Vec3 operator-(const Vec3& A, const Vec3& B);
+
 float Dot(const Vec2& A, const Vec2& B);
 float Dot(const Vec3& A, const Vec3& B);
 float Dot(const Vec4& A, const Vec4& B);

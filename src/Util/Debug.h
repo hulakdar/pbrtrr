@@ -35,14 +35,22 @@
 # define DISABLE_OPTIMIZATION __pragma(optimize("", off))
 # define ENABLE_OPTIMIZATION __pragma(optimize("", on))
 
-void StartDebugSystem();
+void InitDebug();
+
+void LockPrint();
+void UnlockPrint();
 
 namespace Debug {
 	template <typename T>
 	void PrintImpl(T Arg)
 	{
 		using namespace std;
-		if constexpr (is_same<T, wchar_t[]>() || is_same<T, wchar_t*>() || is_same<T, wstring>())
+		if constexpr (
+			is_same<T, wchar_t[]>()
+		||  is_same<T, wchar_t*>()
+		||  is_same<T, wstring>()
+		||  is_same<T, wstring_view>()
+			)
 		{
 			wcout << Arg << " ";
 			wcout.flush();
@@ -57,8 +65,10 @@ namespace Debug {
 	template <typename ...Ts>
 	void Print(Ts&& ...Args)
 	{
+		LockPrint();
 		(PrintImpl(Args), ...);
 		std::cout << std::endl;
+		UnlockPrint();
 	}
 
 	bool ValidateImpl(long Result);

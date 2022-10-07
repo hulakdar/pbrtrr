@@ -8,16 +8,29 @@
 #include "Containers/ArrayView.h"
 #include "Containers/String.h"
 #include "Containers/Function.h"
+#include "Containers/ComPtr.h"
 
 bool IsSwapChainReady();
 void WaitForFenceValue(ID3D12Fence* Fence, u64 FenceValue, void* Event);
-void FlushQueue(ID3D12CommandQueue* CommandQueue, ID3D12Fence* Fence, u64& FenceValue, void* FenceEvent);
-u64 Signal(ID3D12CommandQueue* CommandQueue, ID3D12Fence* Fence, u64& FenceValue);
+void FlushQueue(D3D12_COMMAND_LIST_TYPE Type);
+
+struct TicketGPU {
+	u64 Value;
+	D3D12_COMMAND_LIST_TYPE Type;
+};
+
+TicketGPU Signal(D3D12_COMMAND_LIST_TYPE Type);
+TicketGPU CurrentFrameTicket();
+bool WorkIsDone(TicketGPU& Ticket);
+void WaitForCompletion(TicketGPU& Ticket);
+void InsertWait(D3D12_COMMAND_LIST_TYPE Type, TicketGPU& Ticket);
+
+u64 GetGeneralHandleGPU(UINT Index);
 
 void UploadTextureData(TextureData& TexData, const u8* RawData, u32 RawDataSize);
 void UploadBufferData(ID3D12Resource* Destination, const void* Data, uint64_t Size, D3D12_RESOURCE_STATES TargetState);
 void UploadBufferData(ID3D12Resource* Destination, u64 Size, D3D12_RESOURCE_STATES TargetState, TFunction<void(void*, u64)> UploadFunction);
-void FlushUpload(u64 CurrentFrameID);
+void FlushUpload();
 
 void CreateRTV(TextureData& TexData);
 void CreateSRV(TextureData& TexData);
@@ -51,7 +64,13 @@ ComPtr<ID3D12Resource> CreateResource(
 
 ComPtr<ID3D12Resource> CreateBuffer(u64 Size, BufferType Type = (BufferType)0);
 
-ComPtr<ID3D12PipelineState> CreateShaderCombination(
+struct Shader
+{
+	ComPtr<ID3D12PipelineState> PSO;
+	ID3D12RootSignature* RootSignature = nullptr;
+};
+
+Shader CreateShaderCombinationGraphics(
 	TArrayView<D3D12_INPUT_ELEMENT_DESC> PSOLayout,
 	TArrayView<StringView> EntryPoints,
 	StringView ShaderFile,
@@ -61,16 +80,23 @@ ComPtr<ID3D12PipelineState> CreateShaderCombination(
 	TArrayView<D3D12_RENDER_TARGET_BLEND_DESC> BlendDescs = TArrayView<D3D12_RENDER_TARGET_BLEND_DESC>(nullptr)
 );
 
+Shader CreateShaderCombinationCompute(
+	StringView EntryPoint,
+	StringView ShaderFile
+);
+
 void InitRender(System::Window& Window);
 
-ID3D12CommandQueue* GetGraphicsQueue();
+ID3D12CommandQueue* GetGPUQueue(D3D12_COMMAND_LIST_TYPE QueueType = (D3D12_COMMAND_LIST_TYPE)0);
 ID3D12Resource*     GetBackBufferResource(u32 Index);
 TextureData&        GetBackBuffer(u32 Index);
 ID3D12Device*       GetGraphicsDevice();
 
 void PresentCurrentBackBuffer();
-void Submit(D3D12CmdList& CmdList, u64 CurrentFrameID);
-void Submit(TArray<D3D12CmdList>& CmdLists, u64 CurrentFrameID);
+
+void Submit(D3D12CmdList& CmdList);
+void Submit(TArray<D3D12CmdList>& CmdLists);
+
 void CreateBackBufferResources(System::Window& Window);
 
 enum ShaderType
@@ -105,8 +131,8 @@ struct GraphicsDeviceCapabilities
 	u64 ConservativeRasterizationTier : 2; // D3D12_CONSERVATIVE_RASTERIZATION_TIER
 	u64 GPUVirtualAddressMaxBits : 5; // - 32
 	u64 ResourceHeapTier : 1; // D3D12_RESOURCE_HEAP_TIER - 1 
-	u64 ShaderModel5     : 1; // D3D_SHADER_MODEL >= D3D_SHADER_MODEL_5_1
-	u64 ShaderModel6     : 4; // D3D_SHADER_MODEL - 0x60
+	u64 ShaderModelMajor : 1; // D3D_SHADER_MODEL >= D3D_SHADER_MODEL_6_0
+	u64 ShaderModelMinor : 4; // D3D_SHADER_MODEL - 0x60
 	u64 WaveOperations   : 1;
 	u64 WaveLaneCount    : 7;
 	u64 WaveCountTotal   : 10;

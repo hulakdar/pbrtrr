@@ -11,20 +11,22 @@
 
 TQueue<ComPtr<ID3D12GraphicsCommandList>> gCommandLists[4];
 TracyLockable(Mutex, gCommandListLock);
+//Mutex gCommandListLock;
 
 std::atomic<u64> gListsInFlight = 0;
 
-
-TracyLockable(Mutex, gDebugMapLock);
+//TracyLockable(Mutex, gDebugMapLock);
+Mutex gDebugMapLock;
 TMap<ID3D12GraphicsCommandList*, const wchar_t*> gDebugMap;
 
-D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameID, const wchar_t *DebugName)
+D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, const wchar_t *DebugName)
 {
 	D3D12CmdList Result;
 	Result.Type = Type;
-	Result.CommandAllocator = GetCommandAllocator(Type, CurrentFrameID);
-	Result.CommandAllocator->SetName(DebugName);
+	Result.CommandAllocator = GetCommandAllocator(Type);
 	VALIDATE(Result.CommandAllocator->Reset());
+
+	Result.CommandAllocator->SetName(DebugName);
     {
 		ScopedLock AutoLock(gCommandListLock);
 		if (!gCommandLists[Type].empty())
@@ -36,7 +38,6 @@ D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameI
 	if (!Result.CommandList)
 	{
 		Result.CommandList = CreateCommandList(Result.CommandAllocator.Get(), Type);
-
 	}
 	VALIDATE(Result.CommandList->Reset(Result.CommandAllocator.Get(), nullptr));
 	Result.CommandList->SetName(DebugName);
@@ -49,14 +50,14 @@ D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameI
 	return Result;
 }
 
-void DiscardCommandList(D3D12CmdList& CmdList, uint64_t CurrentFrameID)
+void DiscardCommandList(D3D12CmdList& CmdList)
 {
 	gDebugMapLock.lock();
 	gDebugMap.erase(CmdList.CommandList.Get());
 	gDebugMapLock.unlock();
 
 	gListsInFlight--;
-	DiscardCommandAllocator(CmdList.CommandAllocator, CmdList.Type, CurrentFrameID);
+	DiscardCommandAllocator(CmdList.CommandAllocator, CmdList.Type);
 
 	ScopedLock AutoLock(gCommandListLock);
 	gCommandLists[CmdList.Type].push(MOVE(CmdList.CommandList));

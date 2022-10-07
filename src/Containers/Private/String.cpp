@@ -14,7 +14,7 @@ WString StringFromFormat(const wchar_t* Format, ...)
 	WString Result(CharLen, '\0');
 
 	va_start(ArgList, Format);
-	_vsnwprintf(Result.data(), (int)Result.length(), Format, ArgList);
+	_vsnwprintf(Result.data(), (size_t)Result.length(), Format, ArgList);
 	va_end(ArgList);
 	return WString();
 }
@@ -27,12 +27,26 @@ String StringFromFormat(const char* Format, ...)
 	int CharLen = stbsp_vsnprintf(nullptr, 0, Format, ArgList);
 	va_end(ArgList);
 
-	String Result(CharLen, '\0');
+	String Result(CharLen + 1, '\0');
 
 	va_start(ArgList, Format);
 	stbsp_vsnprintf(Result.data(), (int)Result.length(), Format, ArgList);
 	va_end(ArgList);
 
+	return Result;
+}
+
+WString ToWide(const StringView& Narrow)
+{
+	WString Result(Narrow.size(), L'\0');
+	mbstowcs( Result.data(), Narrow.data(), Result.size());
+	return Result;
+}
+
+WString ToWide(const String& Narrow)
+{
+	WString Result(Narrow.size(), L'\0');
+	mbstowcs( Result.data(), Narrow.c_str(), Result.size());
 	return Result;
 }
 

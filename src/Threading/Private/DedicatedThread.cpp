@@ -6,11 +6,15 @@
 #include <windows.h>
 #include <unordered_set>
 #include <Util/Debug.h>
+#include <limits>
+#include <array>
 
-DISABLE_OPTIMIZATION
+using TicketType = decltype(TicketCPU().Value);
+const u64 NumBitsForTickets = std::numeric_limits<TicketType>::max() + 1;
+const u64 NumBitsInShared = 64;
 
-std::atomic<u8>  gCurrentTicketId;
-std::atomic<u64> gSharedTickets[4];
+std::atomic<TicketType> gCurrentTicketId;
+std::array<std::atomic<u64>, NumBitsForTickets / NumBitsInShared> gSharedTickets;
 
 namespace {
 	bool ThreadShouldExit(DedicatedThreadData *DedicatedThread)
@@ -34,9 +38,12 @@ namespace {
 				break;
 			}
 
-			Lock.unlock();
-			StealWork();
-			Lock.lock();
+			if (DedicatedThread->ThreadShouldStealWork)
+			{
+				Lock.unlock();
+				StealWork();
+				Lock.lock();
+			}
 		}
 
 		if (DedicatedThread->WorkItems.empty())
@@ -50,14 +57,19 @@ namespace {
 		ExecuteItem(Item);
 	}
 
-	void DedicatedThreadProc(DedicatedThreadData* DedicatedThread, String ThreadName)
+	void DedicatedThreadProc(DedicatedThreadData* DedicatedThread)
 	{
-		tracy::SetThreadName(ThreadName.c_str());
+		tracy::SetThreadName(DedicatedThread->ThreadName.c_str());
 		while (!DedicatedThread->ThreadShouldStop)
 		{
 			PopAndExecute(DedicatedThread);
 		}
 	}
+}
+
+Thread::id GetCurrentThreadID()
+{
+	return std::this_thread::get_id();
 }
 
 void ExecuteItem(WorkItem& Item)
@@ -70,39 +82,44 @@ void ExecuteItem(WorkItem& Item)
 	if (Item.TicketValid)
 	{
 		u64 TicketID = Item.WorkDoneTicket.Value;
-		u64 Shift = TicketID % 64;
+		u64 Shift = TicketID % NumBitsInShared;
 		u64 Mask = (1ULL << Shift);
 
-		u64 Test = (gSharedTickets[TicketID / 64].load() & Mask);
+		u64 Test = (gSharedTickets[TicketID / NumBitsInShared].load(std::memory_order_acquire) & Mask);
 		CHECK(Test == Mask, "Ticket already cleared?!");
 
-		gSharedTickets[TicketID / 64] &= ~(Mask);
+		gSharedTickets[TicketID / NumBitsInShared].fetch_and(~(Mask), std::memory_order_release);
 	}
 }
 
 void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName, u64 AffinityMask)
 {
-	DedicatedThread->ActualThread = Thread(DedicatedThreadProc, DedicatedThread, ThreadName);
+	DedicatedThread->ThreadName = ThreadName;
+	LockableName(DedicatedThread->ItemsLock.Ptr->Lock, ThreadName.c_str(), ThreadName.size());
+
+	DedicatedThread->ActualThread = Thread(DedicatedThreadProc, DedicatedThread);
+	DedicatedThread->ThreadID = DedicatedThread->ActualThread.get_id();
 	auto handle = DedicatedThread->ActualThread.native_handle();
+
 	SetThreadAffinityMask(handle, AffinityMask);
 }
 
 void StopDedicatedThread(DedicatedThreadData* DedicatedThread)
 {
 	DedicatedThread->ThreadShouldStop = true;
-	DedicatedThread->WakeUp->notify_all();
+	DedicatedThread->WakeUp->notify_one();
 	if (DedicatedThread->ActualThread.joinable())
 		DedicatedThread->ActualThread.join();
 }
 
-bool WorkIsDone(Ticket WorkDoneTicket)
+bool WorkIsDone(TicketCPU WorkDoneTicket)
 {
-	u64 Shift = WorkDoneTicket.Value % 64;
+	u64 Shift = WorkDoneTicket.Value % NumBitsInShared;
 	u64 Mask = (1ULL << Shift);
-	return (gSharedTickets[WorkDoneTicket.Value / 64] & Mask) == 0;
+	return (gSharedTickets[WorkDoneTicket.Value / NumBitsInShared].load(std::memory_order_relaxed) & Mask) == 0;
 }
 
-void WaitForCompletion(Ticket WorkDoneTicket)
+void WaitForCompletion(TicketCPU WorkDoneTicket)
 {
 	while (!WorkIsDone(WorkDoneTicket))
 	{
@@ -116,35 +133,26 @@ void WaitForCompletion(Ticket WorkDoneTicket)
 void EnqueueWork(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work)
 {
 	ScopedMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
-	DedicatedThread->WorkItems.push({ MOVE(Work), Ticket {42}, false });
+	DedicatedThread->WorkItems.push({ MOVE(Work), TicketCPU(), false});
 	DedicatedThread->WakeUp->notify_one();
 }
 
-Ticket EnqueueWorkWithTicket(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work)
+TicketCPU EnqueueWorkWithTicket(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work)
 {
 	ZoneScoped;
-	u8 TicketID = 0;
+	TicketCPU Result { gCurrentTicketId++ };
 
-	while (true)
-	{
-		TicketID = gCurrentTicketId++;
+	u64 Shift = Result.Value % NumBitsInShared;
+	u64 Mask = (1ULL << Shift);
+	u64 Test = gSharedTickets[Result.Value / NumBitsInShared].load(std::memory_order_acquire) & Mask;
+	CHECK(Test == 0, "Ticket bit already set");
+	gSharedTickets[Result.Value / NumBitsInShared].fetch_or(Mask, std::memory_order_release);
 
-		u64 Shift = TicketID % 64;
-		u64 Mask = (1ULL << Shift);
-		if ((gSharedTickets[TicketID / 64] & Mask) == 0)
-		{
-			gSharedTickets[TicketID / 64] |= (Mask);
-			break;
-		}
-	}
+	ScopedMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
+	DedicatedThread->WorkItems.push({ MOVE(Work), Result, true });
+	DedicatedThread->WakeUp->notify_one();
 
-	{
-		ScopedMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
-		DedicatedThread->WorkItems.push({ MOVE(Work), Ticket {TicketID}, true });
-		DedicatedThread->WakeUp->notify_one();
-	}
-
-	return Ticket{ TicketID };
+	return Result;
 }
 
 void   ExecutePendingWork(DedicatedThreadData* DedicatedThread)

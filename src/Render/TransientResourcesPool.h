@@ -12,8 +12,8 @@ enum BufferType
 struct PooledBuffer
 {
 	ID3D12Resource* Resource = nullptr;
+	u32 Size = 0;
 	u16 Offset = 0;
-	u16 Size = 0;
 	u8  Type = 0;
 
 	ID3D12Resource* operator->() const { return Resource; }

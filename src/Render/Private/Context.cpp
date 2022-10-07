@@ -1,6 +1,7 @@
 #include "Render/Context.h"
 #include "Render/Texture.h"
 #include "Render/RenderDebug.h"
+#include "Render/RenderThread.h"
 #include "Render/CommandListPool.h"
 
 #include "Containers/Map.h"
@@ -10,14 +11,17 @@
 #include "Threading/Mutex.h"
 #include "Threading/MainThread.h"
 #include "System/Window.h"
+#include "Assets/File.h"
 
 #include <imgui.h>
 #include <Tracy.hpp>
 #include <dxgi1_6.h>
-#include <d3dcompiler.h>
+
+#include <dxcapi.h>
 
 #include "RenderContextHelpers.h"
 #include "Render/TransientResourcesPool.h"
+#include <TracyD3D12.hpp>
 
 static const u32 UPLOAD_BUFFERS = 1;
 static const u32 RTV_HEAP_SIZE = 4096;
@@ -35,11 +39,20 @@ ComPtr<ID3D12DescriptorHeap>    gDSVDescriptorHeap;
 ComPtr<ID3D12DescriptorHeap>    gGeneralDescriptorHeap;
 ComPtr<ID3D12RootSignature>     gRootSignature;
 ComPtr<ID3D12RootSignature>     gComputeRootSignature;
-ComPtr<ID3D12CommandQueue>      gGraphicsQueue;
-ComPtr<ID3D12CommandQueue>      gComputeQueue;
-ComPtr<ID3D12CommandQueue>      gCopyQueue;
+
+ComPtr<ID3D12CommandQueue> gQueues[4];
+ComPtr<ID3D12Fence>        gFences[4];
+std::atomic<u64>           gFenceValues[4];
+
 ComPtr<IDXGIFactory4>           gDXGIFactory;
 ComPtr<ID3D12Device>            gDevice;
+
+//ComPtr<IDxcLibrary>  gDxcLibrary;
+ComPtr<IDxcUtils>    gDxcUtils;
+ComPtr<IDxcCompiler> gDxcCompiler;
+ComPtr<IDxcIncludeHandler> gIncludeHandler;
+
+TracyD3D12Ctx	gCopyProfilingCtx;
 
 D3D12CmdList gUploadCmdList;
 
@@ -61,9 +74,11 @@ ID3D12Device* GetGraphicsDevice()
 	return gDevice.Get();
 }
 
-ID3D12CommandQueue* GetGraphicsQueue()
+ID3D12CommandQueue* GetGPUQueue(D3D12_COMMAND_LIST_TYPE QueueType)
 {
-	return gGraphicsQueue.Get();
+	CHECK(QueueType <= D3D12_COMMAND_LIST_TYPE_COPY && QueueType != D3D12_COMMAND_LIST_TYPE_BUNDLE, "Unsupported queue type");
+
+	return gQueues[QueueType].Get();
 }
 
 namespace {
@@ -98,6 +113,23 @@ namespace {
 		return dxgiFactory;
 	}
 
+	void PrintBlob(IDxcBlobEncoding* ErrorBlob)
+	{
+		BOOL Known;
+		UINT32 CodePage;
+		ErrorBlob->GetEncoding(&Known, &CodePage);
+		if (Known && CodePage != CP_UTF8)
+		{
+			std::wstring_view Str((wchar_t*)ErrorBlob->GetBufferPointer(), ErrorBlob->GetBufferSize());
+			Debug::Print(Str);
+		}
+		else
+		{
+			std::string_view Str((char *)ErrorBlob->GetBufferPointer(), ErrorBlob->GetBufferSize());
+			Debug::Print(Str);
+		}
+	}
+
 	void PrintBlob(ID3DBlob* ErrorBlob)
 	{
 		std::string_view Str((char *)ErrorBlob->GetBufferPointer(), ErrorBlob->GetBufferSize());
@@ -114,19 +146,22 @@ namespace {
 		{
 			return ePixelShader;
 		}
+		else if (EndsWith(EntryPoint, "CS"))
+		{
+			return eComputeShader;
+		}
 		return eShaderTypeCount;
 	}
 
 	StringView GetTargetVersionFromType(ShaderType Type)
 	{
 		static StringView TargetVersions[] = {
-			"ps_5_1",
-			"vs_5_1",
+			"ps",
+			"vs",
 			"",
 			"",
 			"",
-			"",
-			"cs_5_1",
+			"cs",
 		};
 		if (Type != eShaderTypeCount)
 		{
@@ -136,35 +171,57 @@ namespace {
 		return "";
 	}
 
-	ComPtr<ID3DBlob> CompileShader(StringView FileName, StringView EntryPoint)
+	ComPtr<IDxcBlob> CompileShader(StringView FileName, StringView EntryPoint)
 	{
-		ComPtr<ID3DBlob> Result;
-
 		ShaderType Type = GetShaderTypeFromEntryPoint(EntryPoint);
-		StringView TargetVersion = GetTargetVersionFromType(Type);
+		StringView TargetType = GetTargetVersionFromType(Type);
 
-		ComPtr<ID3DBlob> ErrorBlob;
+		String TargetVersion = StringFromFormat(
+			"%s_%d_%d",
+			TargetType.data(),
+			gDeviceCaps.ShaderModelMajor ? 6 : 5,
+			gDeviceCaps.ShaderModelMinor
+		);
+		WString Target = ToWide(TargetVersion);
+
 		String Shader = LoadWholeFile(FileName);
-		HRESULT HR = D3DCompile(
-			Shader.data(), Shader.size(),
-			FileName.data(),
-			nullptr, nullptr,
-			EntryPoint.data(), TargetVersion.data(),
-			D3DCOMPILE_DEBUG, 0,
-			&Result,
-			&ErrorBlob
+
+		ComPtr<IDxcBlobEncoding> pSource;
+		gDxcUtils->CreateBlob(Shader.data(), (u32)Shader.size(), CP_UTF8, &pSource);
+
+		WString File = ToWide(FileName);
+		WString Entry = ToWide(EntryPoint);
+
+		PCWSTR Arguments[] = {
+			L"-Zi",
+			L"-Qembed_debug",
+		};
+
+		ComPtr<IDxcOperationResult> OperationResult;
+		HRESULT HR = gDxcCompiler->Compile(
+			pSource.Get(),
+			File.c_str(), Entry.c_str(), Target.c_str(),
+			Arguments, ArrayCount(Arguments),
+			nullptr, 0,
+			gIncludeHandler.Get(),
+			&OperationResult
 		);
 
-		if (!SUCCEEDED(HR))
-		{
-			PrintBlob(ErrorBlob.Get());
-			DEBUG_BREAK();
-		}
-		else if (ErrorBlob)
+		if(SUCCEEDED(HR))
+			OperationResult->GetStatus(&HR);
+
+		ComPtr<IDxcBlobEncoding> ErrorBlob;
+		OperationResult->GetErrorBuffer(&ErrorBlob);
+		if (ErrorBlob->GetBufferSize())
 		{
 			PrintBlob(ErrorBlob.Get());
 		}
 
+		if (!SUCCEEDED(HR))
+			DEBUG_BREAK();
+
+		ComPtr<IDxcBlob> Result;
+		OperationResult->GetResult(&Result);
 		return Result;
 	}
 }
@@ -180,19 +237,11 @@ void WaitForFenceValue(ID3D12Fence* Fence, uint64_t FenceValue, HANDLE Event)
 	}
 }
 
-uint64_t Signal(ID3D12CommandQueue* CommandQueue, ID3D12Fence* Fence, uint64_t& FenceValue)
-{
-	uint64_t FenceValueForSignal = ++FenceValue;
-	VALIDATE(CommandQueue->Signal(Fence, FenceValueForSignal));
-
-	return FenceValueForSignal;
-}
-
-void FlushQueue(ID3D12CommandQueue* CommandQueue, ID3D12Fence* Fence, uint64_t& FenceValue, HANDLE FenceEvent)
+void FlushQueue(D3D12_COMMAND_LIST_TYPE Type)
 {
 	ZoneScoped;
-	uint64_t fenceValueForSignal = Signal(CommandQueue, Fence, FenceValue);
-	WaitForFenceValue(Fence, fenceValueForSignal, FenceEvent);
+	TicketGPU Ticket = Signal(Type);
+	WaitForCompletion(Ticket);
 }
 
 ComPtr<ID3D12Resource> CreateResource(const D3D12_RESOURCE_DESC* ResourceDescription, const D3D12_HEAP_PROPERTIES* HeapProperties, D3D12_RESOURCE_STATES InitialState, const D3D12_CLEAR_VALUE* ClearValue)
@@ -217,7 +266,7 @@ ComPtr<ID3D12Resource> CreateBuffer(u64 Size, BufferType Type)
 
 	const D3D12_HEAP_PROPERTIES* HeapProps = &DefaultHeapProps;
 
-	D3D12_RESOURCE_STATES InitialState = D3D12_RESOURCE_STATE_COPY_DEST;
+	D3D12_RESOURCE_STATES InitialState = D3D12_RESOURCE_STATE_COMMON;
 
 	if (Type == BUFFER_UPLOAD)
 	{
@@ -263,8 +312,10 @@ void SetupDeviceCapabilities(D3D_FEATURE_LEVEL FeatureLevel, ID3D12Device* Devic
 		D3D12_FEATURE_DATA_SHADER_MODEL Options{ D3D_SHADER_MODEL_6_4 };
 		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &Options, sizeof(Options))))
 		{
-			gDeviceCaps.ShaderModel5 = Options.HighestShaderModel >= D3D_SHADER_MODEL_5_1;
-			gDeviceCaps.ShaderModel6 = Options.HighestShaderModel - 0x60;
+			gDeviceCaps.ShaderModelMajor = Options.HighestShaderModel >= D3D_SHADER_MODEL_6_0;
+			gDeviceCaps.ShaderModelMinor = gDeviceCaps.ShaderModelMajor ?
+			  Options.HighestShaderModel - 0x60
+			: 1;
 		}
 	}
 	{
@@ -532,6 +583,28 @@ uint32_t gSyncInterval = 2;
 void InitRender(System::Window& Window)
 {
 	ZoneScoped;
+
+#if !defined(RELEASE) && !defined(PROFILE)
+	// d3d12 debug layer
+	{
+		ComPtr<ID3D12Debug3> debugInterface;
+		VALIDATE(D3D12GetDebugInterface(IID_PPV_ARGS(&debugInterface)));
+		debugInterface->EnableDebugLayer();
+		debugInterface->SetEnableGPUBasedValidation(true);
+		debugInterface->SetEnableSynchronizedCommandQueueValidation(true);
+	}
+#endif
+#if !defined(RELEASE) && !defined(PROFILE)
+	{
+		ComPtr<ID3D12DeviceRemovedExtendedDataSettings> pDredSettings;
+		VALIDATE(D3D12GetDebugInterface(IID_PPV_ARGS(&pDredSettings)));
+
+		// Turn on auto-breadcrumbs and page fault reporting.
+		pDredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+		pDredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+	}
+#endif
+
 	gDXGIFactory = CreateFactory();
 	gDevice = CreateDevice();
 
@@ -539,13 +612,18 @@ void InitRender(System::Window& Window)
 	{
 		gDescriptorSizes[i] = gDevice->GetDescriptorHandleIncrementSize((D3D12_DESCRIPTOR_HEAP_TYPE)i);
 	}
-	gGraphicsQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_DIRECT);
-	gComputeQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_COMPUTE);
-	gCopyQueue = CreateCommandQueue(D3D12_COMMAND_LIST_TYPE_COPY);
+	for (D3D12_COMMAND_LIST_TYPE Type = D3D12_COMMAND_LIST_TYPE_DIRECT; Type <= D3D12_COMMAND_LIST_TYPE_COPY; Type = (D3D12_COMMAND_LIST_TYPE)(Type + 1))
+	{
+		if (Type != D3D12_COMMAND_LIST_TYPE_BUNDLE)
+		{
+			gQueues[Type] = CreateCommandQueue(Type);
+			gFences[Type] = CreateFence(0);
+		}
+	}
 
 	gGeneralDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, GENERAL_HEAP_SIZE, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
 	gRTVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, RTV_HEAP_SIZE, D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
-	gDSVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
+	gDSVDescriptorHeap = CreateDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, DSV_HEAP_SIZE, D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
 
 	CreateBackBufferResources(Window);
 
@@ -594,28 +672,29 @@ void InitRender(System::Window& Window)
 	}
 
 	// compute
-	if (false)
+	//if (false)
 	{
-		CD3DX12_ROOT_PARAMETER Params[3] = {};
+		CD3DX12_ROOT_PARAMETER Params[4] = {};
 
 		{
 			CD3DX12_DESCRIPTOR_RANGE Range(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
 			Params[0].InitAsDescriptorTable(1, &Range);
-			Params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 		}
+		Params[1].InitAsUnorderedAccessView(0);
 		{
-			CD3DX12_DESCRIPTOR_RANGE Range(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
-			Params[1].InitAsDescriptorTable(1, &Range);
-			Params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+			CD3DX12_DESCRIPTOR_RANGE Range(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 12, 1);
+			Params[2].InitAsDescriptorTable(1, &Range);
 		}
-		Params[2].InitAsConstants(16, 0);
-		Params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+		Params[3].InitAsConstants(4, 0);
 
-		CD3DX12_STATIC_SAMPLER_DESC Samplers[2] = {};
-		Samplers[0].Init(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
-		Samplers[1].Init(1, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
-		Samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-		Samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		CD3DX12_STATIC_SAMPLER_DESC Samplers[1] = {};
+		Samplers[0].Init(
+			0,
+			D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+			D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+			D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+			D3D12_TEXTURE_ADDRESS_MODE_CLAMP
+		);
 
 		CD3DX12_ROOT_SIGNATURE_DESC DescRootSignature;
 
@@ -642,7 +721,16 @@ void InitRender(System::Window& Window)
 
 		gComputeRootSignature = CreateRootSignature(RootBlob);
 	}
-	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, 0, L"Upload cmd list");
+	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_COPY, L"Upload cmd list");
+
+	gCopyProfilingCtx = TracyD3D12Context(gDevice.Get(), GetGPUQueue(D3D12_COMMAND_LIST_TYPE_COPY));
+
+	TracyD3D12ContextName(gCopyProfilingCtx, "Copy", 4);
+	TracyD3D12NewFrame(gCopyProfilingCtx);
+
+	DxcCreateInstance(CLSID_DxcUtils, IID_PPV_ARGS(gDxcUtils.GetAddressOf()));
+	DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(gDxcCompiler.GetAddressOf()));
+	gDxcUtils->CreateDefaultIncludeHandler(gIncludeHandler.GetAddressOf());
 }
 
 void UploadTextureData(TextureData& TexData, const uint8_t *RawData, u32 RawDataSize)
@@ -668,7 +756,7 @@ void UploadTextureData(TextureData& TexData, const uint8_t *RawData, u32 RawData
 	ID3D12Resource* Resource = GetTextureResource(TexData.ID);
 	D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 		Resource,
-		D3D12_RESOURCE_STATE_COPY_DEST,
+		D3D12_RESOURCE_STATE_COMMON,
 		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
 	);
 
@@ -688,6 +776,7 @@ void UploadTextureData(TextureData& TexData, const uint8_t *RawData, u32 RawData
 	GetTransientBuffer(TextureUploadBuffer, UploadBufferSize, BUFFER_UPLOAD);
 
 	ScopedLock Lock(gUploadMutex);
+	TracyD3D12Zone(gCopyProfilingCtx, gUploadCmdList.Get(), "Upload texture data");
 	gUploadBuffers.push_back(TextureUploadBuffer);
 	UpdateSubresources<1>(gUploadCmdList.Get(), Resource, TextureUploadBuffer.Get(), TextureUploadBuffer.Offset, 0, 1, &SrcData);
 	gUploadTransitions.push_back(Barrier);
@@ -702,36 +791,39 @@ ComPtr<ID3D12Fence> CreateFence(uint64_t InitialValue, D3D12_FENCE_FLAGS Flags)
 	return Result;
 }
 
-void FlushUpload(u64 CurrentFrameID)
+void FlushUpload()
 {
-	//ZoneScoped;
+	ZoneScoped;
 	ScopedLock Lock(gUploadMutex);
 	if (gUploadTransitions.empty())
 	{
 		return;
 	}
 
-	gUploadCmdList->ResourceBarrier((UINT)gUploadTransitions.size(), gUploadTransitions.data());
-	gUploadTransitions.clear();
+	Submit(gUploadCmdList);
+	TicketGPU UploadDone = Signal(gUploadCmdList.Type);
+	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_COPY, L"Upload cmdlist");
 
-	Submit(gUploadCmdList, CurrentFrameID);
-	gUploadCmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFrameID, L"Upload cmdlist");
-
-	EnqueueDelayedWork([buffers = MOVE(gUploadBuffers)]() mutable {
-		for (auto& Buffer : buffers)
+	EnqueueDelayedWork(
+		[
+			Transitions = MOVE(gUploadTransitions),
+			Buffers = MOVE(gUploadBuffers)
+		]() mutable {
+		auto TransitionsCommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Resource transitions");
+		TransitionsCommandList->ResourceBarrier((UINT)Transitions.size(), Transitions.data());
+		Submit(TransitionsCommandList);
+		for (auto& Buffer : Buffers)
 		{
 			DiscardTransientBuffer(Buffer);
 		}
-	}, CurrentFrameID);
-
-	CHECK(gUploadBuffers.empty(), "?");
+	}, UploadDone);
 }
 
 void UploadBufferData(ID3D12Resource* Destination, u64 Size, D3D12_RESOURCE_STATES TargetState, TFunction<void(void*, u64)> UploadFunction)
 {
 	D3D12_RESOURCE_BARRIER Barrier = CD3DX12_RESOURCE_BARRIER::Transition(
 		Destination,
-		D3D12_RESOURCE_STATE_COPY_DEST,
+		D3D12_RESOURCE_STATE_COMMON,
 		TargetState
 	);
 
@@ -773,10 +865,14 @@ void PresentCurrentBackBuffer()
 {
 	ZoneScoped;
 
-	PIXScopedEvent(gGraphicsQueue.Get(), __LINE__, "Present");
+	PIXScopedEvent(GetGPUQueue(), __LINE__, "Present");
 
 	//ScopedLock Lock(gPresentLock);
 	VALIDATE(gSwapChain->Present(gSyncInterval, gPresentFlags));
+
+	ScopedLock Lock(gUploadMutex);
+	TracyD3D12Collect(gCopyProfilingCtx);
+	TracyD3D12NewFrame(gCopyProfilingCtx);
 }
 
 ComPtr<ID3D12PipelineState> CreatePSO(D3D12_COMPUTE_PIPELINE_STATE_DESC* PSODesc)
@@ -796,7 +892,7 @@ ComPtr<ID3D12PipelineState> CreatePSO(D3D12_GRAPHICS_PIPELINE_STATE_DESC* PSODes
 	return Result;
 }
 
-ComPtr<ID3D12PipelineState> CreateShaderCombination(
+Shader CreateShaderCombinationGraphics(
 	TArrayView<D3D12_INPUT_ELEMENT_DESC> PSOLayout,
 	TArrayView<StringView> EntryPoints,
 	StringView ShaderFile,
@@ -806,18 +902,19 @@ ComPtr<ID3D12PipelineState> CreateShaderCombination(
 	TArrayView<D3D12_RENDER_TARGET_BLEND_DESC> BlendDescs
 )
 {
-	D3D12_GRAPHICS_PIPELINE_STATE_DESC PSODesc = {};
-
-	TArray<ComPtr<ID3DBlob>> Shaders;
+	TArray<ComPtr<IDxcBlob>> Shaders;
 	
 	UINT ShaderCounts[eShaderTypeCount] = {0};
+
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC PSODesc = {};
 	for (StringView Entry : EntryPoints)
 	{
 		ShaderType Type = GetShaderTypeFromEntryPoint(Entry);
-		ComPtr<ID3DBlob> Shader = CompileShader(ShaderFile, Entry);
+		ComPtr<IDxcBlob> ShaderBlob = CompileShader(ShaderFile, Entry);
 
-		LPVOID Data = Shader->GetBufferPointer();
-		SIZE_T Size = Shader->GetBufferSize();
+		/*
+		LPVOID Data = ShaderBlob->GetBufferPointer();
+		SIZE_T Size = ShaderBlob->GetBufferSize();
 
 		ComPtr<ID3D12ShaderReflection> Reflection;
 		D3DReflect(Data, Size, IID_PPV_ARGS(&Reflection));
@@ -865,22 +962,19 @@ ComPtr<ID3D12PipelineState> CreateShaderCombination(
 			Reflection->GetOutputParameterDesc(i, &OutputDesc);
 			continue;
 		}
+		*/
 
-		Shaders.push_back(Shader);
+		Shaders.push_back(ShaderBlob);
 
 		switch (Type)
 		{
 			case eVertexShader:
-				PSODesc.VS.BytecodeLength = Shader->GetBufferSize();
-				PSODesc.VS.pShaderBytecode = Shader->GetBufferPointer();
+				PSODesc.VS.BytecodeLength = ShaderBlob->GetBufferSize();
+				PSODesc.VS.pShaderBytecode = ShaderBlob->GetBufferPointer();
 				break;
 			case ePixelShader:
-				PSODesc.PS.BytecodeLength = Shader->GetBufferSize();
-				PSODesc.PS.pShaderBytecode = Shader->GetBufferPointer();
-				break;
-			case eComputeShader:
-				UINT x, y, z;
-				Reflection->GetThreadGroupSize(&x, &y, &z);
+				PSODesc.PS.BytecodeLength = ShaderBlob->GetBufferSize();
+				PSODesc.PS.pShaderBytecode = ShaderBlob->GetBufferPointer();
 				break;
 			default:
 				DEBUG_BREAK();
@@ -918,7 +1012,83 @@ ComPtr<ID3D12PipelineState> CreateShaderCombination(
 		PSODesc.BlendState.RenderTarget[i] = BlendDescs[i];
 	}
 
-	return CreatePSO(&PSODesc);
+	Shader Result;
+	Result.PSO = CreatePSO(&PSODesc);
+	Result.RootSignature = PSODesc.pRootSignature;
+	return Result;
+}
+
+Shader CreateShaderCombinationCompute(
+	StringView EntryPoint,
+	StringView ShaderFile
+)
+{
+	ShaderType Type = GetShaderTypeFromEntryPoint(EntryPoint);
+	CHECK(Type == ShaderType::eComputeShader, "?");
+
+	ComPtr<IDxcBlob> ShaderBlob = CompileShader(ShaderFile, EntryPoint);
+
+	/*
+	LPVOID Data = ShaderBlob->GetBufferPointer();
+	SIZE_T Size = ShaderBlob->GetBufferSize();
+
+	ComPtr<ID3D12ShaderReflection> Reflection;
+	D3DReflect(Data, Size, IID_PPV_ARGS(&Reflection));
+
+	D3D12_SHADER_DESC Desc;
+	{
+		Reflection->GetDesc(&Desc);
+		D3D12_SHADER_VERSION_TYPE ShaderType = (D3D12_SHADER_VERSION_TYPE)D3D12_SHVER_GET_TYPE(Desc.Version);
+		CHECK(Type == ShaderType, "Parsing error?");
+	}
+
+	for (UINT i = 0; i < Desc.ConstantBuffers; ++i)
+	{
+		ID3D12ShaderReflectionConstantBuffer *ConstantBufferReflection = Reflection->GetConstantBufferByIndex(i);
+
+		D3D12_SHADER_BUFFER_DESC ConstantBufferDesc;
+		ConstantBufferReflection->GetDesc(&ConstantBufferDesc);
+		for (UINT j = 0; j < Desc.ConstantBuffers; ++j)
+		{
+			ID3D12ShaderReflectionVariable* VariableReflection = ConstantBufferReflection->GetVariableByIndex(j);
+			D3D12_SHADER_VARIABLE_DESC VariableDesc;
+			VariableReflection->GetDesc(&VariableDesc);
+			continue;
+		}
+		continue;
+	}
+
+	for (UINT i = 0; i < Desc.BoundResources; ++i)
+	{
+		D3D12_SHADER_INPUT_BIND_DESC BindDesc;
+		Reflection->GetResourceBindingDesc(i, &BindDesc);
+		continue;
+	}
+
+	for (UINT i = 0; i < Desc.InputParameters; ++i)
+	{
+		D3D12_SIGNATURE_PARAMETER_DESC InputDesc;
+		Reflection->GetInputParameterDesc(i, &InputDesc);
+		continue;
+	}
+
+	for (UINT i = 0; i < Desc.OutputParameters; ++i)
+	{
+		D3D12_SIGNATURE_PARAMETER_DESC OutputDesc;
+		Reflection->GetOutputParameterDesc(i, &OutputDesc);
+		continue;
+	}
+	*/
+
+	D3D12_COMPUTE_PIPELINE_STATE_DESC PSODesc = {};
+	PSODesc.CS.BytecodeLength = ShaderBlob->GetBufferSize();
+	PSODesc.CS.pShaderBytecode = ShaderBlob->GetBufferPointer();
+	PSODesc.pRootSignature = gComputeRootSignature.Get();
+
+	Shader Result;
+	Result.PSO = CreatePSO(&PSODesc);
+	Result.RootSignature = PSODesc.pRootSignature;
+	return Result;
 }
 
 ComPtr<ID3D12CommandAllocator> CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE Type)
@@ -961,13 +1131,13 @@ void CreateResourceForTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, 
 	TexData.Flags = (u8)Flags;
 }
 
-D3D12_GPU_DESCRIPTOR_HANDLE GetGeneralHandleGPU(UINT Index)
+u64 GetGeneralHandleGPU(UINT Index)
 {
 	CHECK(Index != UINT_MAX, "Uninitialized index");
 	CD3DX12_GPU_DESCRIPTOR_HANDLE rtv(gGeneralDescriptorHeap->GetGPUDescriptorHandleForHeapStart(),
 		Index, gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV]);
 
-	return rtv;
+	return rtv.ptr;
 }
 
 D3D12_CPU_DESCRIPTOR_HANDLE GetRTVHandle(uint32_t Index)
@@ -1008,22 +1178,28 @@ void BindDescriptors(ID3D12GraphicsCommandList* CommandList, TextureData& Tex)
 
 	CommandList->SetGraphicsRootSignature(gRootSignature.Get());
 	CommandList->SetDescriptorHeaps(ArrayCount(DescriptorHeaps), DescriptorHeaps);
+
+	D3D12_GPU_DESCRIPTOR_HANDLE Descriptor;
+	Descriptor.ptr = GetGeneralHandleGPU(Tex.SRV);
 	CommandList->SetGraphicsRootDescriptorTable(
 		0,
-		GetGeneralHandleGPU(Tex.SRV)
+		Descriptor
 	);
 }
 
 void BindRenderTargets(ID3D12GraphicsCommandList* CommandList, TArrayView<uint32_t> RTVs, uint32_t DSV)
 {
-	TArray<D3D12_CPU_DESCRIPTOR_HANDLE> RTVHandles;
-	for (auto RTV : RTVs)
-		RTVHandles.push_back(GetRTVHandle(RTV));
+	D3D12_CPU_DESCRIPTOR_HANDLE RTVHandles[8] { 0 };
+	for (int i = 0; i < RTVs.size(); ++i)
+	{
+		RTVHandles[i] = GetRTVHandle(RTVs[i]);
+	}
+
 	D3D12_CPU_DESCRIPTOR_HANDLE DSVHandle = GetDSVHandle(DSV);
 	D3D12_CPU_DESCRIPTOR_HANDLE* DSVHandlePtr = nullptr;
 	if (DSV != -1)
 		DSVHandlePtr = &DSVHandle;
-	CommandList->OMSetRenderTargets((UINT)RTVHandles.size(), RTVHandles.data(), true, DSVHandlePtr);
+	CommandList->OMSetRenderTargets((UINT)RTVs.size(), RTVHandles, true, DSVHandlePtr);
 }
 
 void ClearRenderTarget(ID3D12GraphicsCommandList* CommandList, uint32_t RTV, float* clearColor)
@@ -1034,33 +1210,6 @@ void ClearRenderTarget(ID3D12GraphicsCommandList* CommandList, uint32_t RTV, flo
 void ClearDepth(ID3D12GraphicsCommandList* CommandList, uint32_t DSV, float depthValue)
 {
 	CommandList->ClearDepthStencilView(GetDSVHandle(DSV), D3D12_CLEAR_FLAG_DEPTH, depthValue, 0, 0, nullptr);
-}
-
-//[[nodiscard("Return value should be stored to later wait for it")]]
-//uint64_t RenderContext::ExecuteCopy(ID3D12CommandList* CmdList, ID3D12Fence* Fence, uint64_t& CurrentFenceValue)
-//{
-//	ZoneScoped;
-//	ID3D12CommandList* const CommandLists[] = { CmdList };
-//	gCopyQueue->ExecuteCommandLists(ArrayCount(CommandLists), CommandLists);
-//	return Signal(gCopyQueue, Fence, CurrentFenceValue);
-//}
-//
-//[[nodiscard("Return value should be stored to later wait for it")]]
-//uint64_t RenderContext::ExecuteCompute(ID3D12CommandList* CmdList, ID3D12Fence* Fence, uint64_t& CurrentFenceValue)
-//{
-//	ZoneScoped;
-//	ID3D12CommandList* const CommandLists[] = { CmdList };
-//	gComputeQueue->ExecuteCommandLists(ArrayCount(CommandLists), CommandLists);
-//	return Signal(gComputeQueue, Fence, CurrentFenceValue);
-//}
-
-[[nodiscard("Return value should be stored to later wait for it")]]
-uint64_t ExecuteGraphics(ID3D12CommandList* CmdList, ID3D12Fence* Fence, uint64_t& CurrentFenceValue)
-{
-	ZoneScoped;
-	ID3D12CommandList* const CommandLists[] = { CmdList };
-	gGraphicsQueue->ExecuteCommandLists(ArrayCount(CommandLists), CommandLists);
-	return Signal(gGraphicsQueue.Get(), Fence, CurrentFenceValue);
 }
 
 ComPtr<IDXGISwapChain2> CreateSwapChain(System::Window& Window, DXGI_SWAP_CHAIN_FLAG Flags)
@@ -1082,7 +1231,7 @@ ComPtr<IDXGISwapChain2> CreateSwapChain(System::Window& Window, DXGI_SWAP_CHAIN_
 
 	{
 		ComPtr<IDXGISwapChain1> Tmp;
-		VALIDATE(gDXGIFactory->CreateSwapChainForHwnd(gGraphicsQueue.Get(), Window.mHwnd, &swapChainDesc, nullptr, nullptr, &Tmp));
+		VALIDATE(gDXGIFactory->CreateSwapChainForHwnd(GetGPUQueue(), Window.mHwnd, &swapChainDesc, nullptr, nullptr, &Tmp));
 		Tmp.As(&Result);
 		CHECK(Result, "DXGI 1.3 not supported?");
 	}
@@ -1112,31 +1261,19 @@ void UpdateRenderTargetViews(unsigned Width, unsigned Height)
 	}
 }
 
-void Submit(D3D12CmdList& CmdList, uint64_t CurrentFrameID)
+void Submit(D3D12CmdList& CmdList)
 {
 	ZoneScopedN("Submit one command list");
 	ID3D12CommandList* CommandLists[] = {
 		CmdList.Get()
 	};
 	CmdList->Close();
-	switch (CmdList.Type)
-	{
-	case D3D12_COMMAND_LIST_TYPE_DIRECT:
-		gGraphicsQueue->ExecuteCommandLists(1, CommandLists);
-		break;
-	case D3D12_COMMAND_LIST_TYPE_COMPUTE:
-		gComputeQueue->ExecuteCommandLists(1, CommandLists);
-		break;
-	case D3D12_COMMAND_LIST_TYPE_COPY:
-		gCopyQueue->ExecuteCommandLists(1, CommandLists);
-		break;
-	default:
-		DEBUG_BREAK();
-	}
-	DiscardCommandList(CmdList, CurrentFrameID);
+
+	GetGPUQueue(CmdList.Type)->ExecuteCommandLists(1, CommandLists);
+	DiscardCommandList(CmdList);
 }
 
-void Submit(TArray<D3D12CmdList>& CmdLists, u64 CurrentFrameID)
+void Submit(TArray<D3D12CmdList>& CmdLists)
 {
 	ZoneScopedN("Submit multiple command lists");
 
@@ -1148,25 +1285,52 @@ void Submit(TArray<D3D12CmdList>& CmdLists, u64 CurrentFrameID)
 		CommandLists.push_back(CmdList.Get());
 		CHECK(CmdList.Type == Type, "Mixed command lists");
 	}
+	GetGPUQueue(Type)->ExecuteCommandLists((u32)CommandLists.size(), CommandLists.data());
 
-	switch (Type)
-	{
-	case D3D12_COMMAND_LIST_TYPE_DIRECT:
-		gGraphicsQueue->ExecuteCommandLists(CommandLists.size(), CommandLists.data());
-		break;
-	case D3D12_COMMAND_LIST_TYPE_COMPUTE:
-		gComputeQueue->ExecuteCommandLists(CommandLists.size(), CommandLists.data());
-		break;
-	case D3D12_COMMAND_LIST_TYPE_COPY:
-		gCopyQueue->ExecuteCommandLists(CommandLists.size(), CommandLists.data());
-		break;
-	default:
-		DEBUG_BREAK();
-	}
 	for (auto& CmdList : CmdLists)
 	{
-		DiscardCommandList(CmdList, CurrentFrameID);
+		DiscardCommandList(CmdList);
 	}
+}
+
+TicketGPU Signal(D3D12_COMMAND_LIST_TYPE Type)
+{
+	TicketGPU Result;
+	Result.Type = Type;
+	Result.Value = ++gFenceValues[Type];
+	gQueues[Type]->Signal(gFences[Type].Get(), Result.Value);
+
+	return Result;
+}
+
+TicketGPU CurrentFrameTicket()
+{
+	TicketGPU Result;
+	Result.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+	Result.Value = gFenceValues[Result.Type] + 1;
+
+	return Result;
+}
+
+bool WorkIsDone(TicketGPU& Ticket)
+{
+	return gFences[Ticket.Type]->GetCompletedValue() >= Ticket.Value;
+}
+
+void WaitForCompletion(TicketGPU& Ticket)
+{
+	if (!WorkIsDone(Ticket))
+	{
+		HANDLE Event = CreateEvent(0, 0, 0, 0);
+		WaitForFenceValue(gFences[Ticket.Type].Get(), Ticket.Value, Event);
+	}
+}
+
+void InsertWait(D3D12_COMMAND_LIST_TYPE Type, TicketGPU& Ticket)
+{
+	CHECK(Ticket.Type != Type, "You don't need to wait for the fence on the same queue");
+
+	gQueues[Type]->Wait(gFences[Ticket.Type].Get(), Ticket.Value);
 }
 
 void CreateBackBufferResources(System::Window& Window)
@@ -1234,7 +1398,7 @@ void CreateRTV(TextureData& TexData)
 	TexData.RTV = Index;
 }
 
-std::atomic<u16> gCurrentGeneralIndex = 0;
+std::atomic<u16> gCurrentGeneralIndex = 1;
 void CreateSRV(TextureData& TexData)
 {
 	u16 Index = gCurrentGeneralIndex++;
@@ -1258,7 +1422,16 @@ void CreateSRV(TextureData& TexData)
 
 void CreateUAV(TextureData& TexData)
 {
-	CHECK(gCurrentGeneralIndex < GENERAL_HEAP_SIZE, "Too much SRV descriptors. Need new plan.");
+	u16 Index;
+	if (TexData.UAV != MAXWORD)
+	{
+		Index = TexData.UAV;
+	}
+	else
+	{
+		Index = gCurrentGeneralIndex++;
+		CHECK(Index < GENERAL_HEAP_SIZE, "Too much SRV descriptors. Need new plan.");
+	}
 
 	//ZoneScoped;
 	D3D12_UNORDERED_ACCESS_VIEW_DESC UAVDesc = {};
@@ -1266,10 +1439,14 @@ void CreateUAV(TextureData& TexData)
 	UAVDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 
 	D3D12_CPU_DESCRIPTOR_HANDLE Handle = gGeneralDescriptorHeap->GetCPUDescriptorHandleForHeapStart();
-	Handle.ptr += gCurrentGeneralIndex * gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV];
+
+	if (TexData.UAV != MAXWORD)
+	{
+		Handle.ptr += Index * gDescriptorSizes[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV];
+	}
 	gDevice->CreateUnorderedAccessView(GetTextureResource(TexData.ID), NULL, &UAVDesc, Handle);
 
-	TexData.UAV = gCurrentGeneralIndex++;
+	TexData.UAV = Index;
 }
 
 std::atomic<u16> gCurrentDSVIndex = 0;

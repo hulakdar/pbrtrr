@@ -43,6 +43,7 @@ struct ID3D12CommandQueue;
 struct ID3D12PipelineState;
 struct ID3D12CommandAllocator;
 struct ID3D12GraphicsCommandList;
+struct ID3D12RootSignature;
 
 struct TextureData;
 struct D3D12CmdList;

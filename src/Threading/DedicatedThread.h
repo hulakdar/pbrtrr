@@ -11,13 +11,18 @@
 #include <thread>
 #include <condition_variable>
 
-struct Ticket { u8 Value; };
+struct TicketCPU { u16 Value; };
 
 struct WorkItem
 {
 	TFunction<void(void)> Work;
-	Ticket                WorkDoneTicket;
+	TicketCPU                WorkDoneTicket;
 	bool                  TicketValid;
+};
+
+struct WorkQueue
+{
+	int n;
 };
 
 void ExecuteItem(WorkItem& Item);
@@ -25,12 +30,14 @@ void ExecuteItem(WorkItem& Item);
 struct DedicatedThreadData
 {
 	bool ThreadShouldStop = false;
+	bool ThreadShouldStealWork = true;
 	MovableMutex ItemsLock;
 	TUniquePtr<std::condition_variable_any> WakeUp;
 	TQueue<WorkItem> WorkItems;
 	String ThreadName;
 	Thread ActualThread;
 	u64 SleepMicrosecondsWhenIdle;
+	Thread::id ThreadID;
 
 	DedicatedThreadData()
 		: WakeUp(new std::condition_variable_any())
@@ -39,11 +46,13 @@ struct DedicatedThreadData
 	}
 };
 
+Thread::id GetCurrentThreadID();
+
 void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName, u64 AffinityMask);
 void StopDedicatedThread(DedicatedThreadData* DedicatedThread);
 
 void   EnqueueWork(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work);
-Ticket EnqueueWorkWithTicket(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work);
-bool   WorkIsDone(Ticket WorkDoneTicket);
-void   WaitForCompletion(Ticket WorkDoneTicket);
+TicketCPU EnqueueWorkWithTicket(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work);
+bool   WorkIsDone(TicketCPU WorkDoneTicket);
+void   WaitForCompletion(TicketCPU WorkDoneTicket);
 void   ExecutePendingWork(DedicatedThreadData* DedicatedThread);

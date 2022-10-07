@@ -14,5 +14,4 @@ enum class TargetThread : u8
 	RenderThread,
 	WorkerThread,
 };
-void EnqueueDelayedWork(TFunction<void(void)>&& Work, u64 SafeFenceValue, TargetThread Thread = TargetThread::WorkerThread);
-void CheckForDelayedWork(u64 CurrentFenceValue);
+

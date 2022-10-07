@@ -53,7 +53,7 @@ void InitGUI(const System::Window& WindowHandle)
 		gFontTexData.Width = (u16)w;
 		gFontTexData.Height = (u16)h;
 		gFontTexData.Format = DXGI_FORMAT_R8_UNORM;
-		CreateResourceForTexture(gFontTexData, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+		CreateResourceForTexture(gFontTexData, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON);
 		UploadTextureData(gFontTexData, Data, w*h*4);
 		CreateSRV(gFontTexData);
 	});

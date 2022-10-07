@@ -7,6 +7,19 @@
 #include <iostream>
 #include <sstream>
 #include <dxgi1_6.h>
+#include <Threading/Mutex.h>
+
+TracyLockable(Mutex, gPrintMutex);
+
+void LockPrint()
+{
+	gPrintMutex.lock();
+}
+
+void UnlockPrint()
+{
+	gPrintMutex.unlock();
+}
 
 namespace {
 	class Stream : public std::stringbuf
@@ -15,8 +28,10 @@ namespace {
 		~Stream() { sync(); }
 		virtual int sync() override
 		{
-			::OutputDebugStringA(str().c_str());
-			printf(str().c_str());
+			auto s = str();
+			const char* cs = s.c_str();
+			::OutputDebugStringA(cs);
+			printf("%s", cs);
 			str(std::string()); // Clear the string buffer
 			return 0;
 		}
@@ -28,8 +43,10 @@ namespace {
 		~WStream() { sync(); }
 		virtual int sync() override
 		{
-			::OutputDebugStringW(str().c_str());
-			wprintf(str().c_str());
+			auto s = str();
+			const wchar_t* cs = s.c_str();
+			::OutputDebugStringW(cs);
+			wprintf(L"%s", cs);
 			str(std::wstring()); // Clear the string buffer
 			return 0;
 		}
@@ -38,31 +55,11 @@ namespace {
 	WStream gWStream;
 }
 
-void StartDebugSystem()
+void InitDebug()
 {
 	// for printing to cout
 	std::cout.rdbuf(&gStream);
 	std::wcout.rdbuf(&gWStream);
-#if !defined(RELEASE) && !defined(PROFILE)
-	// d3d12 debug layer
-	{
-		ComPtr<ID3D12Debug3> debugInterface;
-		VALIDATE(D3D12GetDebugInterface(IID_PPV_ARGS(&debugInterface)));
-		debugInterface->EnableDebugLayer();
-		debugInterface->SetEnableGPUBasedValidation(true);
-		debugInterface->SetEnableSynchronizedCommandQueueValidation(true);
-	}
-#endif
-#if !defined (RELEASE)
-	{
-		ComPtr<ID3D12DeviceRemovedExtendedDataSettings> pDredSettings;
-		VALIDATE(D3D12GetDebugInterface(IID_PPV_ARGS(&pDredSettings)));
-
-		// Turn on auto-breadcrumbs and page fault reporting.
-		pDredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-		pDredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
-	}
-#endif
 }
 
 namespace Debug {
@@ -73,6 +70,8 @@ namespace Debug {
 
 		std::string ErrorText = std::system_category().message(Result);
 		Debug::Print("VALIDATE caught error: ", ErrorText);
+
+#if 0
 		if (Result == DXGI_ERROR_DEVICE_REMOVED)
 		{
 			Result = GetGraphicsDevice()->GetDeviceRemovedReason();
@@ -94,6 +93,7 @@ namespace Debug {
 				DEBUG_BREAK();
 			}
 		}
+#endif
 		return false;
 	}
 }

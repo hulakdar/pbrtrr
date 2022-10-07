@@ -5,18 +5,17 @@
 #include "Util/Debug.h"
 #include "Containers/Array.h"
 
-//#define DEBUG_TICKETS
-
-auto *gWorkers = new TArray<DedicatedThreadData>();
+TArray<DedicatedThreadData> gWorkers;
 
 void EnqueueToWorker(TFunction<void(void)>&& Work)
 {
-	EnqueueWork(&(*gWorkers)[rand() % gWorkers->size()], MOVE(Work));
+	EnqueueWork(&gWorkers[rand() % gWorkers.size()], MOVE(Work));
 }
 
-Ticket EnqueueToWorkerWithTicket(TFunction<void(void)>&& Work)
+//#define DEBUG_TICKETS
+TicketCPU EnqueueToWorkerWithTicket(TFunction<void(void)>&& Work)
 {
-	Ticket Result = EnqueueWorkWithTicket(&(*gWorkers)[rand()%gWorkers->size()], MOVE(Work));
+	TicketCPU Result = EnqueueWorkWithTicket(&gWorkers[rand()%gWorkers.size()], MOVE(Work));
 #ifdef DEBUG_TICKETS
 	WaitForCompletion(Result);
 #endif
@@ -25,28 +24,23 @@ Ticket EnqueueToWorkerWithTicket(TFunction<void(void)>&& Work)
 
 u64 NumberOfWorkers()
 {
-	return gWorkers->size();
+	return gWorkers.size();
 }
 
-void ParallelFor(u64 Size, TFunction<void(u64, u64)>&& Work)
+void ParallelFor(TFunction<void(u64, u64, u64)>&& Work, u64 Size, u64 MaxWorkers)
 {
-	ParallelFor(Size, [Work = MOVE(Work)](u64, u64 Begin, u64 End) {
-		Work(Begin, End);
-	});
-}
+	MaxWorkers = MIN(NumberOfWorkers(), MaxWorkers);
 
-void ParallelFor(u64 Size, TFunction<void(u64, u64, u64)>&& Work)
-{
-	u64 WorkDivisor = Size / (gWorkers->size() + 1);
+	u64 WorkDivisor = Size / (MaxWorkers);
 	u64 Begin = 0;
 	u64 End = WorkDivisor;
-	TArray<Ticket> Tickets;
+	TArray<TicketCPU> Tickets;
 	if (Begin != End)
 	{
-		Tickets.resize(gWorkers->size());
-		for (u64 i = 0; i < gWorkers->size(); ++i)
+		Tickets.resize(MaxWorkers - 1);
+		for (u64 i = 0; i < MaxWorkers - 1; ++i)
 		{
-			Tickets[i] = EnqueueWorkWithTicket(&(*gWorkers)[i],
+			Tickets[i] = EnqueueWorkWithTicket(&gWorkers[i],
 				[i, Begin, End, &Work]()
 				{
 					Work(i, Begin, End);
@@ -59,7 +53,8 @@ void ParallelFor(u64 Size, TFunction<void(u64, u64, u64)>&& Work)
 	}
 	if (Begin != Size)
 	{
-		Work(gWorkers->size(), Begin, Size);
+		ZoneScopedN("Inline parallel for");
+		Work(MaxWorkers - 1, Begin, Size);
 	}
 	for (auto It : Tickets)
 	{
@@ -67,12 +62,19 @@ void ParallelFor(u64 Size, TFunction<void(u64, u64, u64)>&& Work)
 	}
 }
 
+void ParallelFor(TFunction<void(u64, u64)>&& Work, u64 Size, u64 MaxWorkers)
+{
+	ParallelFor([Work = MOVE(Work)](u64, u64 Begin, u64 End) {
+		Work(Begin, End);
+	}, Size, MaxWorkers);
+}
+
 bool StealWork()
 {
-	for (int i = 0; i < gWorkers->size() * 2; ++i)
+	for (int i = 0; i < gWorkers.size() * 2; ++i)
 	{
-		int Index = rand() % gWorkers->size();
-		DedicatedThreadData& randomWorker = (*gWorkers)[Index];
+		int Index = rand() % gWorkers.size();
+		DedicatedThreadData& randomWorker = gWorkers[Index];
 		if (randomWorker.WorkItems.empty() || !randomWorker.ItemsLock.try_lock())
 		{
 			continue;
@@ -94,17 +96,17 @@ bool StealWork()
 void StartWorkerThreads()
 {
 	u32 CoreCount = std::thread::hardware_concurrency();
-	gWorkers->resize(MAX(1, (i32)CoreCount - 2));
+	gWorkers.resize(MAX(1, (i32)CoreCount - 2));
 
-	for (int i = 0; i < gWorkers->size(); ++i)
+	for (int i = 0; i < gWorkers.size(); ++i)
 	{
 		String Name = StringFromFormat("Worker %d", i);
-		StartDedicatedThread(&(*gWorkers)[i], Name, 0x3ULL << i);
+		StartDedicatedThread(&gWorkers[i], Name, 0x4ULL << i);
 	}
 }
 
 void StopWorkerThreads()
 {
-	for (int i = 0; i < gWorkers->size(); ++i)
-		StopDedicatedThread(&(*gWorkers)[i]);
+	for (int i = 0; i < gWorkers.size(); ++i)
+		StopDedicatedThread(&gWorkers[i]);
 }

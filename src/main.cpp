@@ -1,3 +1,4 @@
+#include "Assets/File.h"
 #include "Util/Util.h"
 #include "Util/Debug.h"
 #include "Util/Allocator.h"
@@ -33,7 +34,10 @@
 
 #include <imnodes.h>
 
-DISABLE_OPTIMIZATION
+//DISABLE_OPTIMIZATION
+#define A_CPU
+#include "../thirdparty/FidelityFX-SPD/ffx-spd/ffx_a.h"
+#include "../thirdparty/FidelityFX-SPD/ffx-spd/ffx_spd.h"
 
 struct Camera
 {
@@ -44,27 +48,24 @@ struct Camera
 	Vec2 Angles;
 };
 
-struct VertexDesc
-{
-	DXGI_FORMAT Format;
-	uint32_t	Offset;
-	const char* Semantic;
-};
-
 struct MeshData
 {
-	TArray<D3D12_INPUT_ELEMENT_DESC> VertexDeclaration;
-	ComPtr<ID3D12Resource>	VertexBuffer;
-	ComPtr<ID3D12Resource>	IndexBuffer;
-	uint32_t				VertexBufferSize = UINT_MAX;
-	uint32_t				IndexBufferSize = UINT_MAX;
-	uint32_t				VertexSize = UINT_MAX;
-	uint32_t				MaterialIndex = UINT_MAX;
-
 	Vec3 Offset{0};
 	Vec3 Scale{0};
-	bool b16BitIndeces = false;
-	u64  FrameIDWhenSafeToUse;
+
+	D3D12_GPU_VIRTUAL_ADDRESS VertexBufferCachedPtr;
+	D3D12_GPU_VIRTUAL_ADDRESS IndexBufferCachedPtr;
+	ID3D12PipelineState*      PSO;
+
+	uint32_t				VertexSize    : 10;
+	uint32_t				MaterialIndex : 21;
+	uint32_t				b16BitIndeces : 1;
+
+	uint32_t				VertexBufferSize = UINT_MAX;
+	uint32_t				IndexBufferSize = UINT_MAX;
+	ComPtr<ID3D12Resource>	VertexBuffer;
+	ComPtr<ID3D12Resource>	IndexBuffer;
+	TArray<D3D12_INPUT_ELEMENT_DESC> VertexDeclaration;
 };
 
 struct TextureBindingInfo
@@ -105,7 +106,7 @@ TextureData ParseTexture(aiTexture* Texture)
 	{
 		DEBUG_BREAK();
 	}
-	CreateResourceForTexture(Result, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+	CreateResourceForTexture(Result, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON);
 	UploadTextureData(Result, Data, Result.Width * Result.Height * 4);
 	CreateSRV(Result);
 	return Result;
@@ -163,100 +164,12 @@ void AllocateMeshData(aiMesh* Mesh, MeshData& Result, bool PositionPacked)
 
 	Result.VertexBuffer = CreateBuffer(VertexBufferSize);
 	Result.IndexBuffer = CreateBuffer(IndexBufferSize);
+	Result.VertexBufferCachedPtr = Result.VertexBuffer->GetGPUVirtualAddress();
+	Result.IndexBufferCachedPtr = Result.IndexBuffer->GetGPUVirtualAddress();
 	Result.VertexBufferSize = VertexBufferSize;
 	Result.IndexBufferSize = IndexBufferSize;
 	Result.VertexSize = VertexSize;
 	Result.b16BitIndeces = b16BitIndeces;
-}
-
-void UploadIndexData(u8* CpuPtr, aiMesh* Mesh)
-{
-	bool b16BitIndeces = Mesh->mNumVertices <= 65535;
-	if (b16BitIndeces)
-	{
-		for (UINT i = 0; i < Mesh->mNumFaces; ++i)
-		{
-			CHECK(Mesh->mFaces[i].mNumIndices == 3, "Not triangles?");
-			IVec3 Triangle = *(IVec3*)Mesh->mFaces[i].mIndices;
-			WriteAndAdvance(CpuPtr, (uint16_t)Triangle.x);
-			WriteAndAdvance(CpuPtr, (uint16_t)Triangle.y);
-			WriteAndAdvance(CpuPtr, (uint16_t)Triangle.z);
-		}
-	}
-	else
-	{
-		for (UINT i = 0; i < Mesh->mNumFaces; ++i)
-		{
-			CHECK(Mesh->mFaces[i].mNumIndices == 3, "Not triangles?");
-			WriteAndAdvance(CpuPtr, *(IVec3*)Mesh->mFaces[i].mIndices);
-		}
-	}
-}
-
-void UploadMeshData(u8* CpuPtr, aiMesh* Mesh, bool PositionPacked)
-{
-	Vec3 Min = Vec3{
-		Mesh->mAABB.mMin.x - 0.0001f,
-		Mesh->mAABB.mMin.y - 0.0001f,
-		Mesh->mAABB.mMin.z - 0.0001f,
-	};
-	Vec3 Max = Vec3{
-		Mesh->mAABB.mMax.x + 0.0001f,
-		Mesh->mAABB.mMax.y + 0.0001f,
-		Mesh->mAABB.mMax.z + 0.0001f,
-	};
-	for (UINT i = 0; i < Mesh->mNumVertices; ++i)
-	{
-		if (PositionPacked)
-		{
-			Vec4 Normalized{
-				(Mesh->mVertices[i].x - Min.x) / (Max.x - Min.x),
-				(Mesh->mVertices[i].y - Min.y) / (Max.y - Min.y),
-				(Mesh->mVertices[i].z - Min.z) / (Max.z - Min.z),
-				1.f
-			};
-			WriteAndAdvance(CpuPtr, Vec4PackUnorm(&Normalized.x));
-		}
-		else
-		{
-			WriteAndAdvance(CpuPtr,
-				Vec4h{
-					half(Mesh->mVertices[i].x),
-					half(Mesh->mVertices[i].y),
-					half(Mesh->mVertices[i].z),
-					1.f
-				}
-			);
-		}
-
-		if (Mesh->mNormals)
-		{
-			WriteAndAdvance(CpuPtr,
-				Vec4h{
-					half(Mesh->mNormals[i].x),
-					half(Mesh->mNormals[i].y),
-					half(Mesh->mNormals[i].z),
-					1.f
-				}
-			);
-		}
-
-		for (int j = 0; Mesh->mColors[j]; ++j)
-		{
-			WriteAndAdvance(CpuPtr, (uint8_t)(MIN(Mesh->mColors[j][i].r * 255.0f, 255)));
-			WriteAndAdvance(CpuPtr, (uint8_t)(MIN(Mesh->mColors[j][i].g * 255.0f, 255)));
-			WriteAndAdvance(CpuPtr, (uint8_t)(MIN(Mesh->mColors[j][i].b * 255.0f, 255)));
-			WriteAndAdvance(CpuPtr, (uint8_t)(MIN(Mesh->mColors[j][i].a * 255.0f, 255)));
-		}
-
-		for (int j = 0; Mesh->mTextureCoords[j]; ++j)
-		{
-			WriteAndAdvance(CpuPtr, Vec2h{
-				half(Mesh->mTextureCoords[j][i].x),
-				half(Mesh->mTextureCoords[j][i].y),
-			});
-		}
-	}
 }
 
 class ProgressBarHelper : public Assimp::ProgressHandler
@@ -276,6 +189,8 @@ public:
 #include "Render/RenderThread.h"
 
 #include <assimp/version.h>
+#include <Assets/Mesh.h>
+#include <Assets/DDS.h>
 
 u32 HashDeclaration(TArray<D3D12_INPUT_ELEMENT_DESC>& VertDeclarations)
 {
@@ -291,7 +206,6 @@ u32 HashDeclaration(TArray<D3D12_INPUT_ELEMENT_DESC>& VertDeclarations)
 
 TracyD3D12Ctx	gGraphicsProfilingCtx;
 TracyD3D12Ctx	gComputeProfilingCtx;
-TracyD3D12Ctx	gCopyProfilingCtx;
 
 struct Mesh
 {
@@ -308,58 +222,16 @@ TArray<TextureData> gNumberedTextures;
 TArray<TextureData> gLoadedTextures;
 std::atomic<u32> gLoadedTexturesIndex;
 
-std::atomic<u64> gLastCompletedFence = 0;
-
-TracySharedLockable(RWLock, gMeshPSOsLock);
+TracyLockable(Mutex, gMeshLock);
 TMap<uint32_t, ComPtr<ID3D12PipelineState>> gMeshPSOs;
 
-int main(void)
+Camera gMainCamera;
+
+void StartSceneLoading(String FilePath)
 {
-	while( !::IsDebuggerPresent() )
-		::SleepEx(100, true); // to avoid 100% CPU load
+	EnqueueToWorker([FilePath]() {
+		Assimp::Importer Importer;
 
-	StartDebugSystem();
-
-	gMainThreadID = CurrentThreadID();
-	SetThreadAffinityMask(GetCurrentThread(), 0x1);
-	stbi_set_flip_vertically_on_load(false);
-
-	System::Window Window;
-	Window.Init();
-
-	InitRender(Window);
-	StartRenderThread();
-
-	StartWorkerThreads();
-
-	gGraphicsProfilingCtx = TracyD3D12Context(GetGraphicsDevice(), GetGraphicsQueue());
-	//gComputeProfilingCtx = TracyD3D12Context(gDevice.Get(), gComputeQueue.Get());
-	//gCopyProfilingCtx = TracyD3D12Context(gDevice.Get(), gCopyQueue.Get());
-
-	InitGUI(Window);
-
-	Assimp::Importer Importer;
-	ProgressBarHelper Helper;
-	Importer.SetProgressHandler(&Helper);
-
-	Camera MainCamera;
-	MainCamera.Fov = 60;
-	MainCamera.Near = 0.1;
-	MainCamera.Far = 1000;
-	MainCamera.Eye = Vec3{ 0, 0, -2 };
-	MainCamera.Angles = Vec2{ 0, 0 };
-
-	ComPtr<ID3D12Fence> Fence = CreateFence();
-	u64 CurrentFenceValue = 0;
-	HANDLE WaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-	{
-#if 0
-		String FilePath = "content/DamagedHelmet.glb";
-#elif 1
-		String FilePath = "content/Bistro/BistroExterior.fbx";
-#else
-		String FilePath = "content/SunTemple/SunTemple.fbx";
-#endif
 		const aiScene* Scene = nullptr;
 		{
 			ZoneScopedN("Scene file parsing");
@@ -371,23 +243,36 @@ int main(void)
 		}
 
 		if (!Scene)
-			return 1;
+			return;
 
-		gMeshes.reserve(Scene->mNumMeshes);
-		gMaterials.reserve(Scene->mNumMaterials);
-		gMeshDatas.reserve(Scene->mNumMeshes);
+		EnqueueToRenderThread([Scene]() {
+			gMeshes.reserve(Scene->mNumMeshes);
+			gMaterials.reserve(Scene->mNumMaterials);
+			gMeshDatas.reserve(Scene->mNumMeshes);
+		});
 
+		TArray<TicketCPU> Tickets;
 		if (Scene->HasMaterials())
 		{
-			EnqueueToWorker([Scene, FilePath]() {
+			Tickets.push_back() = EnqueueToWorkerWithTicket([Scene, FilePath]() {
 				StringView MeshFolder(FilePath.c_str(), FilePath.find_last_of("\\/"));
-				ParallelFor(Scene->mNumMaterials,
-					[Scene, &MeshFolder](u64 Index, u64 Begin, u64 End) {
-					for (u32 i = Begin; i < End; ++i)
+				ParallelFor([Scene, &MeshFolder](u64 Begin, u64 End) {
+					for (u64 i = Begin; i < End; ++i)
 					{
 						aiMaterial* MaterialPtr = Scene->mMaterials[i];
 						Material TmpMaterial;
 						TmpMaterial.Name = String(MaterialPtr->GetName().C_Str());
+
+						for (int l = 0; l < MaterialPtr->mNumProperties; ++l)
+						{
+							aiMaterialProperty* Property = MaterialPtr->mProperties[l];
+
+							const char* Key = Property->mKey.C_Str();
+							Debug::Print(Key);
+							Debug::Print(Property->mType);
+							Debug::Print(Property->mSemantic);
+							Debug::Print(Property->mDataLength); 
+						}
 
 						for (u32 j = 0, TextureCount = MaterialPtr->GetTextureCount(aiTextureType_DIFFUSE); j < TextureCount; ++j)
 						{
@@ -409,8 +294,8 @@ int main(void)
 
 							if (TexPath.data[0] == '*')
 							{
-								aiTexture* Texture = Scene->mTextures[i];
 								u32 Index = atoi(TexPath.C_Str() + 1);
+								aiTexture* Texture = Scene->mTextures[Index];
 								TmpMaterial.DiffuseTextures.push_back({ Index, true });
 								TextureData TmpTexData = ParseTexture(Texture);
 								EnqueueToRenderThread(
@@ -450,7 +335,7 @@ int main(void)
 
 										TmpTexData.Width = (u16)Header.dwWidth;
 										TmpTexData.Height = (u16)Header.dwHeight;
-										CreateResourceForTexture(TmpTexData, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+										CreateResourceForTexture(TmpTexData, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON);
 										UploadTextureData(TmpTexData, Data, Header.dwPitchOrLinearSize);
 										CreateSRV(TmpTexData);
 										CHECK(TmpTexData.Format != DXGI_FORMAT_UNKNOWN, "Unknown format");
@@ -468,15 +353,15 @@ int main(void)
 							gMaterials.push_back(MOVE(Tmp));
 						});
 					}
-				});
+				}, Scene->mNumMaterials, 4);
 			});
 		}
 
-		EnqueueToWorker([Scene, &MainCamera, CurrentFenceValue, &Fence, &WaitEvent]() {
+		Tickets.push_back() = EnqueueToWorkerWithTicket([Scene]() {
 			{
 				ZoneScopedN("Upload mesh data");
 
-				ParallelFor(Scene->mNumMeshes, [Scene, &CurrentFenceValue](u64 Begin, u64 End) {
+				ParallelFor([Scene](u64 Begin, u64 End) {
 					for (u64 i = Begin; i < End; ++i)
 					{
 						aiMesh* Mesh = Scene->mMeshes[i];
@@ -505,20 +390,17 @@ int main(void)
 						);
 
 						Tmp.MaterialIndex = Mesh->mMaterialIndex;
-						Tmp.FrameIDWhenSafeToUse = CurrentFenceValue;
 
 						uint32_t Hash = HashDeclaration(Tmp.VertexDeclaration);
 
-						WriteLock PSOLock(gMeshPSOsLock);
+						gMeshLock.lock();
 						ComPtr<ID3D12PipelineState> PSO = gMeshPSOs[Hash];
 
 						if (PSO == nullptr)
 						{
-							PSOLock.unlock();
-
 							DXGI_FORMAT RenderTargetFormat = SCENE_COLOR_FORMAT;
 							TArray<StringView> EntryPoints = {"MainPS", "MainVS"};
-							PSO = CreateShaderCombination(
+							Shader MeshShader = CreateShaderCombinationGraphics(
 								Tmp.VertexDeclaration,
 								EntryPoints,
 								"content/shaders/Simple.hlsl",
@@ -526,16 +408,19 @@ int main(void)
 								D3D12_CULL_MODE_BACK,
 								DEPTH_FORMAT
 							);
-							PSOLock.lock();
-							gMeshPSOs[Hash] = MOVE(PSO);
-							PSOLock.unlock();
+							Tmp.PSO = (gMeshPSOs[Hash] = MOVE(MeshShader.PSO)).Get();
 						}
+						else
+						{
+							Tmp.PSO = PSO.Get();
+						}
+						gMeshLock.unlock();
 
-						EnqueueDelayedWork([Tmp = MOVE(Tmp)]() mutable {
+						EnqueueToRenderThread([Tmp = MOVE(Tmp)]() mutable {
 							gMeshDatas.push_back(MOVE(Tmp));
-						}, CurrentFenceValue, TargetThread::RenderThread);
+						});
 					}
-				});
+				}, Scene->mNumMeshes, 4);
 			}
 
 			{
@@ -586,16 +471,68 @@ int main(void)
 					{
 						aiVector3D Scale, Rotation, Location;
 						CurrentTransform.Decompose(Scale, Rotation, Location);
-						MainCamera.Eye = Vec3{ Location.x, Location.y, Location.z };
+						EnqueueToMainThread([Location]() {
+							gMainCamera.Eye = Vec3{ Location.x, Location.y, Location.z };
+						});
 					}
 					ProcessingQueue.pop();
 				}
 			}
-
 		});
-	}
+		for (TicketCPU T : Tickets)
+		{
+			WaitForCompletion(T);
+		}
+		Importer.FreeScene();
+	});
+}
 
-	ComPtr<ID3D12PipelineState> BlitPSO;
+extern TracyD3D12Ctx	gCopyProfilingCtx;
+int main(void)
+{
+	//while( !::IsDebuggerPresent() )
+		//::SleepEx(100, true); // to avoid 100% CPU load
+
+	InitDebug();
+
+	gMainThreadID = CurrentThreadID();
+	SetThreadAffinityMask(GetCurrentThread(), 0x1);
+	stbi_set_flip_vertically_on_load(false);
+
+	System::Window Window;
+	Window.Init();
+
+	InitRender(Window);
+	StartRenderThread();
+
+	StartWorkerThreads();
+
+	gGraphicsProfilingCtx = TracyD3D12Context(GetGraphicsDevice(), GetGPUQueue(D3D12_COMMAND_LIST_TYPE_DIRECT));
+	gComputeProfilingCtx = TracyD3D12Context(GetGraphicsDevice(), GetGPUQueue(D3D12_COMMAND_LIST_TYPE_COMPUTE));
+
+	TracyD3D12ContextName(gGraphicsProfilingCtx, "Graphics", 8);
+
+	InitGUI(Window);
+
+	gMainCamera.Fov = 60;
+	gMainCamera.Near = 0.1;
+	gMainCamera.Far = 1000;
+	gMainCamera.Eye = Vec3{ 0, 0, -2 };
+	gMainCamera.Angles = Vec2{ 0, 0 };
+
+	ComPtr<ID3D12Fence> Fence = CreateFence();
+	HANDLE WaitEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+#if 0
+	String FilePath = "content/DamagedHelmet.glb";
+#elif 1
+	String FilePath = "content/Bistro/BistroExterior.fbx";
+#else
+	String FilePath = "content/SunTemple/SunTemple.fbx";
+#endif
+
+	StartSceneLoading(FilePath);
+
+	Shader BlitShader;
 	{
 		D3D12_INPUT_ELEMENT_DESC InputDesc = {};
 		InputDesc.SemanticName = "POSITION";
@@ -606,7 +543,7 @@ int main(void)
 
 		DXGI_FORMAT RenderTargetFormat = BACK_BUFFER_FORMAT;
 		TArray<StringView> EntryPoints = {"MainPS", "MainVS"};
-		BlitPSO = CreateShaderCombination(
+		BlitShader = CreateShaderCombinationGraphics(
 			&InputDesc,
 			EntryPoints,
 			"content/shaders/Blit.hlsl",
@@ -615,19 +552,19 @@ int main(void)
 		);
 	}
 
-	ComPtr<ID3D12PipelineState> DownsampleRasterPSO;
+	Shader DownsampleRaster;
 	{
 		D3D12_INPUT_ELEMENT_DESC InputDesc = {};
 
 		InputDesc.SemanticName = "POSITION";
 		InputDesc.SemanticIndex = 0;
-		InputDesc.Format = DXGI_FORMAT_R32G32_FLOAT;
+		InputDesc.Format = DXGI_FORMAT_R16G16_FLOAT;
 		InputDesc.InputSlot = 0;
 		InputDesc.AlignedByteOffset = 0;
 
 		TArray<StringView> EntryPoints = {"MainPS", "MainVS"};
 		DXGI_FORMAT RenderTargetFormat = READBACK_FORMAT;
-		DownsampleRasterPSO = CreateShaderCombination(
+		DownsampleRaster = CreateShaderCombinationGraphics(
 			&InputDesc, 
 			EntryPoints,
 			"content/shaders/Blit.hlsl",
@@ -635,6 +572,11 @@ int main(void)
 			D3D12_CULL_MODE_NONE
 		);
 	}
+
+	Shader FfxSpd = CreateShaderCombinationCompute(
+		"MainCS",
+		"content/shaders/FfxSpd.hlsl"
+	);
 
 	TextureData DefaultTexture;
 	{
@@ -644,7 +586,7 @@ int main(void)
 		DefaultTexture.Width  = (u16)w;
 		DefaultTexture.Height = (u16)h;
 
-		CreateResourceForTexture(DefaultTexture, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST);
+		CreateResourceForTexture(DefaultTexture, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON);
 		UploadTextureData(DefaultTexture, Data, 0);
 		CreateSRV(DefaultTexture);
 		stbi_image_free(Data);
@@ -673,7 +615,6 @@ int main(void)
 		UploadBufferData(Quad.VertexBuffer.Get(), VertexData, sizeof(VertexData), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 		SetD3DName(Quad.VertexBuffer, L"Quad VertexBuffer");
 	}
-	FlushUpload(CurrentFenceValue);
 
 	TextureData SceneColor = {};
 	{
@@ -682,7 +623,7 @@ int main(void)
 		SceneColor.Height = (u16)Window.mSize.y;
 
 		GetTransientTexture(SceneColor,
-			D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+			D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
 			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
 			nullptr
 		);
@@ -706,7 +647,7 @@ int main(void)
 
 	UINT CurrentBackBufferIndex = 0;
 
-	ComPtr<ID3D12PipelineState> GuiPSO;
+	Shader GuiShader;
 	{
 		TArray<D3D12_INPUT_ELEMENT_DESC> PSOLayout =
 		{
@@ -726,7 +667,7 @@ int main(void)
 			D3D12_COLOR_WRITE_ENABLE_ALL,
 		};
 
-		GuiPSO = CreateShaderCombination(
+		GuiShader = CreateShaderCombinationGraphics(
 			PSOLayout,
 			EntryPoints,
 			"content/shaders/GUI.hlsl",
@@ -814,9 +755,22 @@ int main(void)
 		);
 	};
 
-	u64 FrameFenceValues[3] = {};
+	static ComPtr<ID3D12Resource> AtomicBuffer = CreateBuffer(6 * 4);
 
-	std::atomic<u64> QueuedFrameCount = 0;
+	static TextureData OutputTextures[12];
+	for (int i = 0; i < 12; ++i)
+	{
+		OutputTextures[i].Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+		OutputTextures[i].Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+		CreateUAV(OutputTextures[i]);
+	}
+	
+	u16 StartIndex = OutputTextures[0].UAV;
+	for (int i = 0; i < 12; ++i)
+	{
+		CHECK(StartIndex + i == OutputTextures[i].UAV, "?");
+	}
+	static u64 OutputUAVDescriptors = GetGeneralHandleGPU(StartIndex);
 
 	while (!glfwWindowShouldClose(Window.mHandle))
 	{
@@ -827,13 +781,13 @@ int main(void)
 			ZoneScopedN("Window state dirty");
 
 			// Wait for render thread AND gpu
-			Ticket WaitForAll = EnqueueToRenderThreadWithTicket([
+			TicketCPU WaitForAll = EnqueueToRenderThreadWithTicket(
+			[
 				FrameFence = Fence.Get(),
-				&CurrentFenceValue,
 				WaitEvent
 			]() {
 				ZoneScopedN("Wait for render thread AND gpu");
-				FlushQueue(GetGraphicsQueue(), FrameFence, CurrentFenceValue, WaitEvent);
+				FlushQueue(D3D12_COMMAND_LIST_TYPE_DIRECT);
 			});
 
 			WaitForCompletion(WaitForAll);
@@ -1048,8 +1002,9 @@ int main(void)
 				{
 					RenderGraph::Edge& Edge = Graph.Edges[i];
 
-					//ImNodes::PushStyleVar(ImNodesStyleVar_NodePadding, 1);
+					ImNodes::PushStyleVar(ImNodesStyleVar_NodePadding, 1.f);
 					ImNodes::Link(Edge.ID, Edge.StartID, Edge.EndID);
+					ImNodes::PopStyleVar();
 				}
 
 				ImNodes::EndNodeEditor();
@@ -1062,31 +1017,32 @@ int main(void)
 			ExecuteMainThreadWork();
 
 			//while (FenceWithDelay - LastCompletedFence > 2)
-			//while (QueuedFrameCount > 2)
 			while (!IsSwapChainReady())
 			{
-				if (!StealWork())
+				//if (!StealWork())
 				{
 					ExecuteMainThreadWork();
-					std::this_thread::sleep_for(std::chrono::microseconds(10));
+					//std::this_thread::sleep_for(std::chrono::microseconds(10));
 				}
 			}
 			Window.Update();
 		}
 
+		//D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Transfer atomic buffer");
+		//CommandList->ResourceBarrier();
+
 		EnqueueToRenderThread(
 			[
-				&CurrentFenceValue,
 				&SceneColor,
-				&DepthBuffer,
-				CurrentBackBufferIndex
+				&DepthBuffer
 			]() {
-				PIXBeginEvent(GetGraphicsQueue(), __LINE__, "FRAME");
+				FrameMarkStart("Render thread");
+				PIXBeginEvent(GetGPUQueue(), __LINE__, "FRAME");
 
 				TracyD3D12NewFrame(gGraphicsProfilingCtx);
 				ZoneScopedN("New frame");
 
-				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFenceValue, L"Clear");
+				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Clear");
 				CD3DX12_RESOURCE_BARRIER barriers[] = {
 					// SceneColor(srv -> render)
 					CD3DX12_RESOURCE_BARRIER::Transition(
@@ -1110,7 +1066,7 @@ int main(void)
 				}
 				ClearDepth(CommandList.Get(), DepthBuffer.DSV, 0.0f);
 
-				Submit(CommandList, CurrentFenceValue);
+				Submit(CommandList);
 			}
 		);
 
@@ -1118,51 +1074,52 @@ int main(void)
 		{
 			ZoneScopedN("ImGui sliders");
 
-			ImGui::SliderFloat("FOV", &MainCamera.Fov, 5, 160);
-			ImGui::SliderFloat("Near", &MainCamera.Near, 0.01, 3);
-			ImGui::SliderFloat("Far", &MainCamera.Far, 10, 1000);
-			ImGui::DragFloat3("Eye", &MainCamera.Eye.x);
-			ImGui::DragFloat2("Angles", &MainCamera.Angles.x, 0.05);
+			ImGui::SliderFloat("FOV", &gMainCamera.Fov, 5, 160);
+			ImGui::SliderFloat("Near", &gMainCamera.Near, 0.01, 3);
+			ImGui::SliderFloat("Far", &gMainCamera.Far, 10, 1000);
+			ImGui::DragFloat3("Eye", &gMainCamera.Eye.x);
+			ImGui::DragFloat2("Angles", &gMainCamera.Angles.x, 0.05);
 
 			if (ImGui::IsKeyDown(ImGuiKey_W))
 			{
-				MainCamera.Eye.z += 0.01;
+				gMainCamera.Eye.z += 0.01;
 			}
 			if (ImGui::IsKeyDown(ImGuiKey_S))
 			{
-				MainCamera.Eye.z -= 0.01;
+				gMainCamera.Eye.z -= 0.01;
 			}
 			if (ImGui::IsKeyDown(ImGuiKey_A))
 			{
-				MainCamera.Eye.x += 0.01;
+				gMainCamera.Eye.x += 0.01;
 			}
 			if (ImGui::IsKeyDown(ImGuiKey_D))
 			{
-				MainCamera.Eye.x -= 0.01;
+				gMainCamera.Eye.x -= 0.01;
 			}
 			if (ImGui::IsKeyDown(ImGuiKey_Q))
 			{
-				MainCamera.Eye.y += 0.01;
+				gMainCamera.Eye.y += 0.01;
 			}
 			if (ImGui::IsKeyDown(ImGuiKey_E))
 			{
-				MainCamera.Eye.y -= 0.01;
+				gMainCamera.Eye.y -= 0.01;
 			}
 
 			EnqueueToRenderThread(
 				[
-					MainCamera,
+					MainCamera = gMainCamera,
 					&DefaultTexture,
 					&SceneColor,
 					&DepthBuffer,
-					&Window,
-					&CurrentFenceValue
+					&Window
 				]()
 				{
 					TArray<D3D12CmdList> CommandLists;
-					D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFenceValue, L"Main thread drawing meshes");
+					D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Main thread drawing meshes");
 					{
 						ZoneScopedN("Drawing meshes");
+
+						const int DrawingThreads = 6;
 
 						float Fov = MainCamera.Fov;
 						float Near = MainCamera.Near;
@@ -1174,34 +1131,35 @@ int main(void)
 						Matrix4 View = CreateViewMatrix(-Eye, Angles);
 						Matrix4 VP = View * Projection;
 
-						CommandLists.resize(NumberOfWorkers() + 1);
-						for (auto& CmdList : CommandLists)
+						CommandLists.push_back(MOVE(CommandList));
+						CommandLists.resize(DrawingThreads);
+						for (auto It = CommandLists.begin() + 1; It != CommandLists.end(); ++It)
 						{
-							CmdList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFenceValue, L"Worker thread drawing meshes");
+							*It = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Worker thread drawing meshes");
 						}
-						CommandLists[NumberOfWorkers()] = MOVE(CommandList);
 
 						ParallelFor(
-							gMeshes.size(), 
 							[
 								&CommandLists,
 								&DefaultTexture,
-								&VP, &SceneColor, &DepthBuffer,
-								CurrentFenceValue
+								&VP, &SceneColor, &DepthBuffer
 							](u64 Index, u64 Begin, u64 End)
 							{
-								D3D12CmdList& CommandList = CommandLists[Index];
-								TracyD3D12Zone(gGraphicsProfilingCtx, CommandList.Get(), "Render Meshes from worker");
-								PIXScopedEvent(CommandList.Get(), __LINE__, "Render Meshes from worker");
+								D3D12CmdList& CmdList = CommandLists[Index];
+								ID3D12GraphicsCommandList* CommandList = CmdList.Get();
 
-								BindRenderTargets(CommandList.Get(), {SceneColor.RTV}, DepthBuffer.DSV);
+								TracyD3D12Zone(gGraphicsProfilingCtx, CommandList, "Render Meshes from worker");
+								PIXScopedEvent(CommandList, __LINE__, "Render Meshes from worker");
+
 								CD3DX12_VIEWPORT	SceneColorViewport = CD3DX12_VIEWPORT(0.f, 0.f, (float)SceneColor.Width, (float)SceneColor.Height);
 								CD3DX12_RECT		SceneColorScissor = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
 
 								CommandList->RSSetViewports(1, &SceneColorViewport);
 								CommandList->RSSetScissorRects(1, &SceneColorScissor);
 
+								BindRenderTargets(CommandList, {SceneColor.RTV}, DepthBuffer.DSV);
 								CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
 								for (u64 i = Begin; i < End; ++i)
 								{
 									auto& Mesh = gMeshes[i];
@@ -1216,42 +1174,37 @@ int main(void)
 										Matrix4 Combined = Scale * Translation * Mesh.Transform * VP;
 
 										uint32_t MatIndex = MeshData.MaterialIndex;
+										TextureData* Texture = nullptr;
+
 										if (MatIndex < gMaterials.size())
 										{
 											const auto& Tex = gMaterials[MatIndex].DiffuseTextures[0];
 											if (Tex.Numbered)
 											{
-												BindDescriptors(CommandList.Get(), gNumberedTextures[Tex.Index]);
+												Texture = &gNumberedTextures[Tex.Index];
 											}
 											else
 											{
-												BindDescriptors(CommandList.Get(), gLoadedTextures[Tex.Index]);
+												Texture = &gLoadedTextures[Tex.Index];
 											}
-
 										}
 										else
 										{
-											BindDescriptors(CommandList.Get(), DefaultTexture);
+											Texture = &DefaultTexture;
 										}
+
+										BindDescriptors(CommandList, *Texture);
 										CommandList->SetGraphicsRoot32BitConstants(1, sizeof(Combined)/4, &Combined, 0);
-
-										uint32_t Hash = HashDeclaration(MeshData.VertexDeclaration);
-										ID3D12PipelineState* PSO = nullptr;
-										{
-											ReadLock CheapLock(gMeshPSOsLock);
-											PSO = gMeshPSOs[Hash].Get();
-										}
-
-										CommandList->SetPipelineState(PSO);
+										CommandList->SetPipelineState(MeshData.PSO);
 
 										D3D12_VERTEX_BUFFER_VIEW VertexBufferView;
-										VertexBufferView.BufferLocation = MeshData.VertexBuffer->GetGPUVirtualAddress();
+										VertexBufferView.BufferLocation = MeshData.VertexBufferCachedPtr;
 										VertexBufferView.SizeInBytes = MeshData.VertexBufferSize;
 										VertexBufferView.StrideInBytes = MeshData.VertexSize;
 										CommandList->IASetVertexBuffers(0, 1, &VertexBufferView);
 
 										D3D12_INDEX_BUFFER_VIEW IndexBufferView;
-										IndexBufferView.BufferLocation = MeshData.IndexBuffer->GetGPUVirtualAddress();
+										IndexBufferView.BufferLocation = MeshData.IndexBufferCachedPtr;
 										IndexBufferView.SizeInBytes = MeshData.IndexBufferSize;
 										IndexBufferView.Format = MeshData.b16BitIndeces ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT;
 										CommandList->IASetIndexBuffer(&IndexBufferView);
@@ -1259,10 +1212,10 @@ int main(void)
 										CommandList->DrawIndexedInstanced(MeshData.IndexBufferSize / (MeshData.b16BitIndeces ? 2 : 4), 1, 0, 0, 0);
 									}
 								}
-							}
+							}, gMeshes.size(), DrawingThreads
 						);
 					}
-					Submit(CommandLists, CurrentFenceValue);
+					Submit(CommandLists);
 				}
 			);
 		}
@@ -1270,18 +1223,16 @@ int main(void)
 		EnqueueToRenderThread(
 			[
 				&SceneColor,
-				&BlitPSO,
+				&BlitShader,
 				&Quad,
 				&Window,
-				&CurrentFenceValue,
-				&FrameFenceValues,
 				FrameFence = Fence.Get(),
 				WaitEvent,
 				CurrentBackBufferIndex
 			]
 			() {
 				ZoneScopedN("SceneColor(render -> srv)");
-				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFenceValue, L"Blit scenecolor to backbuffer");
+				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Blit scenecolor to backbuffer");
 				{
 					ZoneScopedN("SceneColor barrier");
 					CD3DX12_RESOURCE_BARRIER barriers[] =
@@ -1308,7 +1259,7 @@ int main(void)
 
 					BindDescriptors(CommandList.Get(), SceneColor);
 
-					CommandList->SetPipelineState(BlitPSO.Get());
+					CommandList->SetPipelineState(BlitShader.PSO.Get());
 
 					D3D12_VERTEX_BUFFER_VIEW VertexBufferView;
 					VertexBufferView.BufferLocation = Quad.VertexBuffer->GetGPUVirtualAddress();
@@ -1332,13 +1283,10 @@ int main(void)
 					CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 					CommandList->DrawIndexedInstanced(3, 1, 0, 0, 0);
 				}
-				WaitForFenceValue(FrameFence, FrameFenceValues[CurrentBackBufferIndex], WaitEvent);
-				Submit(CommandList, CurrentFenceValue);
-				EnqueueToMainThread([CompletedFence = FrameFenceValues[CurrentBackBufferIndex]]() {
-					gLastCompletedFence = CompletedFence;
-					FlushUpload(CompletedFence);
-					CheckForDelayedWork(CompletedFence);
-				});
+				Submit(CommandList);
+				FlushUpload();
+
+				RunDelayedWork();
 			}
 		);
 
@@ -1361,9 +1309,8 @@ int main(void)
 				[
 					TotalVtxCount = DrawData->TotalVtxCount,
 					TotalIdxCount = DrawData->TotalIdxCount,
-					DrawLists,
-					&GuiPSO,
-					&CurrentFenceValue,
+					DrawLists = MOVE(DrawLists),
+					&GuiShader,
 					CurrentBackBufferIndex
 				]()
 			{
@@ -1377,11 +1324,7 @@ int main(void)
 				PooledBuffer GuiIBuffer;
 				GetTransientBuffer(GuiIBuffer, IdxBufferSize, BUFFER_UPLOAD);
 
-				Ticket VertexUploadDone = EnqueueToWorkerWithTicket([
-					GuiVBuffer,
-					GuiIBuffer,
-					DrawLists
-				]() {
+				{
 					ZoneScopedN("GUI buffer upload");
 					UINT64 VtxOffset = GuiVBuffer.Offset;
 					UINT64 IdxOffset = GuiIBuffer.Offset;
@@ -1399,9 +1342,9 @@ int main(void)
 					}
 					GuiVBuffer->Unmap(0, nullptr);
 					GuiIBuffer->Unmap(0, nullptr);
-				});
+				}
 
-				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFenceValue, L"Rener GUI");
+				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Rener GUI");
 				{
 					TracyD3D12Zone(gGraphicsProfilingCtx, CommandList.Get(), "Render GUI");
 					PIXScopedEvent(CommandList.Get(), __LINE__, "Render GUI");
@@ -1409,7 +1352,7 @@ int main(void)
 
 					TextureData& RenderTarget = GetBackBuffer(CurrentBackBufferIndex);
 					BindRenderTargets(CommandList.Get(), { RenderTarget.RTV }, (uint32_t)-1);
-					CommandList->SetPipelineState(GuiPSO.Get());
+					CommandList->SetPipelineState(GuiShader.PSO.Get());
 					CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
 					Vec2 RenderTargetSize{ (float)RenderTarget.Width, (float)RenderTarget.Height };
@@ -1454,17 +1397,16 @@ int main(void)
 						VtxOffset += ImGuiCmdList->VtxBuffer.Size;
 						IdxOffset += ImGuiCmdList->IdxBuffer.Size;
 					}
-
-					WaitForCompletion(VertexUploadDone);
 				}
-				Submit(CommandList, CurrentFenceValue);
+				Submit(CommandList);
+				TicketGPU GuiRenderingDone = CurrentFrameTicket();
 
 				EnqueueDelayedWork(
 					[GuiVBuffer, GuiIBuffer]() mutable {
 						DiscardTransientBuffer(GuiVBuffer);
 						DiscardTransientBuffer(GuiIBuffer);
 					},
-					CurrentFenceValue
+					GuiRenderingDone
 				);
 
 				for (ImDrawList* List : DrawLists)
@@ -1475,88 +1417,135 @@ int main(void)
 		}
 
 #define CHECK_SCREENSHOT_CODE 0
-#if CHECK_SCREENSHOT_CODE //|| TRACY_ENABLE // Send screenshot to Tracy
+#if CHECK_SCREENSHOT_CODE || TRACY_ENABLE // Send screenshot to Tracy
 		if (CHECK_SCREENSHOT_CODE || TracyIsConnected)
 		{
-			EnqueueRenderThreadWork(
-				[
-					&Window,
-					&SceneColor,
-					&Quad,
-					&DownsampleRasterPSO,
-					&CurrentFenceValue
-				] () {
-				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFenceValue);
-				{
-					ZoneScopedN("Downsample scenecolor to readback");
-					TracyD3D12Zone(gGraphicsProfilingCtx, CommandList.Get(), "Downsample scenecolor to readback");
-					PIXScopedEvent(CommandList.Get(), __LINE__, "Downsample scenecolor to readback");
+			static bool ScreenShotInFlight = false;
+			if (!ScreenShotInFlight)
+			{
+				ScreenShotInFlight = true;
+				EnqueueToRenderThread(
+					[
+						&Window,
+						&SceneColor,
+						&Quad,
+						&FfxSpd
+					] () {
+					D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Downsample scenecolor to readback");
 
 					TextureData Small = {};
+					PooledBuffer SceneColorStagingBuffer;
+					u16 x, y;
+					u32 NeededMipIndex = -1;
 					{
-						Small.Format = READBACK_FORMAT;
-						Small.Width  = (u16)MIN(Window.mSize.x, 512);
-						Small.Height = (u16)MIN(Window.mSize.y, 512);
-						if (Window.mSize.x > Window.mSize.y)
+						ZoneScopedN("Downsample scenecolor to readback");
+						TracyD3D12Zone(gGraphicsProfilingCtx, CommandList.Get(), "Downsample scenecolor to readback");
+						PIXScopedEvent(CommandList.Get(), __LINE__, "Downsample scenecolor to readback");
+
 						{
-							Small.Height = (u16)floor(Small.Width * (Window.mSize.y / (float)Window.mSize.x));
+							Small.Format = READBACK_FORMAT;
+							Small.Width  = (u16)Window.mSize.x;
+							Small.Height = (u16)Window.mSize.y;
+							while (Small.Width * Small.Height * 4 > 256_kb)
+							{
+								Small.Width  >>= 1;
+								Small.Height >>= 1;
+								NeededMipIndex++;
+							}
+							GetTransientTexture(Small,
+								D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+								D3D12_RESOURCE_STATE_COMMON,
+								nullptr
+							);
+							D3D12_UNORDERED_ACCESS_VIEW_DESC Desc;
+							Desc.Format = (DXGI_FORMAT)Small.Format;
+							Desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+							Small.UAV = OutputTextures[NeededMipIndex].UAV;
+							CreateUAV(Small);
 						}
-						else
+						x = Small.Width;
+						y = Small.Height;
+
 						{
-							Small.Width  = (u16)floor(Small.Height * (Window.mSize.x / (float)Window.mSize.y));
+							CD3DX12_RESOURCE_BARRIER barriers[] = {
+								CD3DX12_RESOURCE_BARRIER::Transition(
+									GetTextureResource(Small.ID),
+									D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS
+								),
+								CD3DX12_RESOURCE_BARRIER::Transition(
+									GetTextureResource(SceneColor.ID),
+									D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+								),
+							};
+							CommandList->ResourceBarrier(ArrayCount(barriers), barriers);
 						}
-						Small.Width  = ((Small.Width  + 31) / 32) * 32;
-						Small.Height = ((Small.Height + 15) / 16) * 16;
-						GetTransientTexture(Small,
-							D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-							D3D12_RESOURCE_STATE_COPY_SOURCE,
-							nullptr
-						);
+
+						{
+							CommandList->SetComputeRootSignature(FfxSpd.RootSignature);
+							CommandList->SetPipelineState(FfxSpd.PSO.Get());
+							BindDescriptors(CommandList.Get(), SceneColor);
+
+							CommandList->SetComputeRootDescriptorTable(0, D3D12_GPU_DESCRIPTOR_HANDLE{GetGeneralHandleGPU(SceneColor.SRV)});
+							//CommandList->SetComputeRootUnorderedAccessView();
+
+							varAU2(dispatchThreadGroupCountXY); // output variable
+							varAU2(workGroupOffset);  // output variable, this constants are required if Left and Top are not 0,0
+							varAU2(numWorkGroupsAndMips); // output variable
+							// input information about your source texture:
+							// left and top of the rectancle within your texture you want to downsample
+							// width and height of the rectancle you want to downsample
+							// if complete source texture should get downsampled: left = 0, top = 0, width = sourceTexture.width, height = sourceTexture.height
+							varAU4(rectInfo) = initAU4(0, 0, SceneColor.Width, SceneColor.Height); // left, top, width, height
+							SpdSetup(dispatchThreadGroupCountXY, workGroupOffset, numWorkGroupsAndMips, rectInfo);
+							// constants:
+							struct SpdConstants {
+							   u32 numWorkGroups;
+							   u32 mips;
+							   float invInputSizeX;
+							   float invInputSizeY;
+							};
+							SpdConstants Data;
+							Data.numWorkGroups = numWorkGroupsAndMips[0];
+							Data.mips = numWorkGroupsAndMips[1];
+							Data.invInputSizeX = 1.f / SceneColor.Width;
+							Data.invInputSizeY = 1.f / SceneColor.Height;
+
+							//CommandList->SetComputeRootDescriptorTable(2);
+							//PooledBuffer AtomicBuffer;
+							//GetTransientBuffer(AtomicBuffer, 6 * 4, BUFFER_GENERIC);
+							//CommandList->ClearUnorderedAccessViewFloat();
+							CommandList->SetComputeRootUnorderedAccessView(1, AtomicBuffer->GetGPUVirtualAddress());
+							CommandList->SetComputeRootDescriptorTable(2, D3D12_GPU_DESCRIPTOR_HANDLE{OutputUAVDescriptors});
+							CommandList->SetComputeRoot32BitConstants(3, 4, &Data, 0);
+
+							uint32_t dispatchX = dispatchThreadGroupCountXY[0];
+							uint32_t dispatchY = dispatchThreadGroupCountXY[1];
+							uint32_t dispatchZ = 1;
+							CommandList->Dispatch(dispatchX, dispatchY, dispatchZ);
+
+							{
+								CD3DX12_RESOURCE_BARRIER barriers[] = {
+									CD3DX12_RESOURCE_BARRIER::Transition(
+										GetTextureResource(Small.ID),
+										D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON
+									),
+									CD3DX12_RESOURCE_BARRIER::Transition(
+										GetTextureResource(SceneColor.ID),
+										D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+									),
+								};
+								CommandList->ResourceBarrier(ArrayCount(barriers), barriers);
+							}
+						}
 					}
+					DiscardTransientTexture(Small);
 
-					// readback(copy_src -> render)
-					{
-						CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-							GetTextureResource(Small.ID),
-							D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
-						CommandList->ResourceBarrier(1, &barrier);
-					}
+					Submit(CommandList);
 
-					{
-						CD3DX12_VIEWPORT	SmallViewport = CD3DX12_VIEWPORT(0.f, 0.f, (float)Small.Width, (float)Small.Height);
-						CD3DX12_RECT		SmallScissor = CD3DX12_RECT(0, 0, LONG_MAX, LONG_MAX);
+					TicketGPU DownsampleDone = CurrentFrameTicket();
 
-						BindRenderTargets(CommandList.Get(), { Small.RTV }, 0);
-						BindDescriptors(CommandList.Get(), SceneColor);
-
-						D3D12_VERTEX_BUFFER_VIEW VertexBufferView;
-						VertexBufferView.BufferLocation = Quad.VertexBuffer->GetGPUVirtualAddress();
-						VertexBufferView.SizeInBytes = Quad.VertexBufferSize;
-						VertexBufferView.StrideInBytes = Quad.VertexSize;
-						CommandList->IASetVertexBuffers(0, 1, &VertexBufferView);
-
-						D3D12_INDEX_BUFFER_VIEW IndexBufferView;
-						IndexBufferView.BufferLocation = Quad.IndexBuffer->GetGPUVirtualAddress();
-						IndexBufferView.SizeInBytes = Quad.IndexBufferSize;
-						IndexBufferView.Format = DXGI_FORMAT_R16_UINT;
-						CommandList->IASetIndexBuffer(&IndexBufferView);
-
-						CommandList->SetPipelineState(DownsampleRasterPSO.Get());
-						CommandList->RSSetViewports(1, &SmallViewport);
-						CommandList->RSSetScissorRects(1, &SmallScissor);
-
-						CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-						CommandList->DrawIndexedInstanced(3, 1, 0, 0, 0);
-					}
-
-					// readback(render -> copy_src)
-					{
-						CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-							GetTextureResource(Small.ID),
-							D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
-						CommandList->ResourceBarrier(1, &barrier);
-					}
-
+					ZoneScopedN("Readback screen capture");
+					TicketGPU CopyDone;
 					{
 						D3D12_RESOURCE_DESC Desc = GetTextureResource(Small.ID)->GetDesc();
 						UINT RowCount;
@@ -1571,117 +1560,99 @@ int main(void)
 						bufferFootprint.Footprint.RowPitch = (UINT)RowPitch;
 						bufferFootprint.Footprint.Format = (DXGI_FORMAT)Small.Format;
 
-						PooledBuffer SceneColorStagingBuffer;
 						GetTransientBuffer(SceneColorStagingBuffer, ResourceSize, BUFFER_STAGING);
 
 						CD3DX12_TEXTURE_COPY_LOCATION Dst(SceneColorStagingBuffer.Get(), bufferFootprint);
 						CD3DX12_TEXTURE_COPY_LOCATION Src(GetTextureResource(Small.ID));
-						CommandList->CopyTextureRegion(&Dst, 0, 0, 0, &Src, nullptr);
 
-						int x = Small.Width, y = Small.Height;
-						DiscardTransientTexture(Small);
-
+						InsertWait(D3D12_COMMAND_LIST_TYPE_COPY, DownsampleDone);
+						D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_COPY, L"Copy screenshot texture");
 						{
-							ZoneScopedN("Readback screen capture");
-
-							EnqueueDelayedWork(
-								[
-									SceneColorStagingBuffer,
-									x, y, CurrentFenceValue
-								]
-							() mutable {
-									EnqueueToMainThread([SceneColorStagingBuffer, x, y, CurrentFenceValue]() mutable {
-										auto ResourcePtr = SceneColorStagingBuffer.Get();
-
-										UINT   RowCount;
-										UINT64 RowPitch;
-										UINT64 ResourceSize;
-										D3D12_RESOURCE_DESC Desc = ResourcePtr->GetDesc();
-										GetGraphicsDevice()->GetCopyableFootprints(&Desc, 0, 1, 0, NULL, &RowCount, &RowPitch, &ResourceSize);
-
-										ZoneScopedN("Uploading screenshot to Tracy");
-										D3D12_RANGE Range;
-										Range.Begin = 0;
-										Range.End = (UINT64)ResourceSize;
-										void* Data = nullptr;
-										VALIDATE(ResourcePtr->Map(0, &Range, &Data));
-		#if TRACY_ENABLE
-										FrameImage(Data, (uint16_t)x, (uint16_t)y, CurrentFenceValue - gLastCompletedFence, false);
-		#endif
-										ResourcePtr->Unmap(0, NULL);
-
-										DiscardTransientBuffer(SceneColorStagingBuffer);
-									});
-							},
-							CurrentFenceValue);
+							//TracyD3D12Zone(gCopyProfilingCtx, CommandList.Get(), "Copy screenshot texture");
+							CommandList->CopyTextureRegion(&Dst, 0, 0, 0, &Src, nullptr);
 						}
+						Submit(CommandList);
+						CopyDone = Signal(D3D12_COMMAND_LIST_TYPE_COPY);
 					}
-				}
-				Submit(CommandList, CurrentFenceValue);
-			});
+
+					EnqueueDelayedWork(
+						[
+							SceneColorStagingBuffer, x, y
+						]
+					() mutable {
+						auto ResourcePtr = SceneColorStagingBuffer.Get();
+
+						UINT   RowCount;
+						UINT64 RowPitch;
+						UINT64 ResourceSize;
+						D3D12_RESOURCE_DESC Desc = ResourcePtr->GetDesc();
+						GetGraphicsDevice()->GetCopyableFootprints(&Desc, 0, 1, 0, NULL, &RowCount, &RowPitch, &ResourceSize);
+
+						ZoneScopedN("Uploading screenshot to Tracy");
+						D3D12_RANGE Range;
+						Range.Begin = 0;
+						Range.End = (UINT64)ResourceSize;
+						void* Data = nullptr;
+						VALIDATE(ResourcePtr->Map(0, &Range, &Data));
+					#if TRACY_ENABLE
+						FrameImage(Data, x, y, 3, false);
+					#endif
+						ResourcePtr->Unmap(0, NULL);
+
+						DiscardTransientBuffer(SceneColorStagingBuffer);
+
+						ScreenShotInFlight = false;
+					},
+					CopyDone);
+				});
+			}
 		}
 #endif
-		QueuedFrameCount++;
-		EnqueueToRenderThread([
-			&QueuedFrameCount,
+		EnqueueToRenderThread(
+		[
 			FrameFence = Fence.Get(),
-			&FrameFenceValues,
-			&CurrentFenceValue,
 			CurrentBackBufferIndex
 		]()
 		{
 			{
 				ZoneScopedN("Present");
-				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, CurrentFenceValue, L"Present");
+				D3D12CmdList CommandList = GetCommandList(D3D12_COMMAND_LIST_TYPE_DIRECT, L"Present");
 				{
 					// backbuffer(render -> present)
-					{
-						CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-							GetBackBufferResource(CurrentBackBufferIndex),
-							D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-						CommandList->ResourceBarrier(1, &barrier);
-					}
-
-					FrameFenceValues[CurrentBackBufferIndex] = Signal(
-						GetGraphicsQueue(),
-						FrameFence,
-						CurrentFenceValue
-					);
+					CD3DX12_RESOURCE_BARRIER barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+						GetBackBufferResource(CurrentBackBufferIndex),
+						D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+					CommandList->ResourceBarrier(1, &barrier);
 				}
-				Submit(CommandList, CurrentFenceValue);
+				Submit(CommandList);
+				Signal(CommandList.Type);
 				PresentCurrentBackBuffer();
 			}
-			QueuedFrameCount--;
 
 			TracyD3D12Collect(gGraphicsProfilingCtx);
-			//TracyD3D12Collect(gComputeProfilingCtx);
-			//TracyD3D12Collect(gCopyProfilingCtx);
+			TracyD3D12Collect(gComputeProfilingCtx);
 
-			PIXEndEvent(GetGraphicsQueue());
+			PIXEndEvent(GetGPUQueue());
+
+			FrameMarkEnd("Render thread");
 		});
 
 		CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % BACK_BUFFER_COUNT;
 	}
-
-	Importer.SetProgressHandler(nullptr);
-	Helper.ShouldProceed = false;
 
 	if (CurrentBackBufferIndex == 0)
 	{
 		CurrentBackBufferIndex = BACK_BUFFER_COUNT;
 	}
 
-	EnqueueToRenderThread([FrameFence = Fence.Get(), CurrentBackBufferIndex, &CurrentFenceValue, WaitEvent]() {
-		FlushQueue(GetGraphicsQueue(), FrameFence, CurrentFenceValue, WaitEvent);
+	EnqueueToRenderThread([FrameFence = Fence.Get(), CurrentBackBufferIndex, WaitEvent]() {
+		FlushQueue(D3D12_COMMAND_LIST_TYPE_DIRECT);
 		ReleaseTextures();
 		TracyD3D12Destroy(gGraphicsProfilingCtx);
-		//TracyD3D12Destroy(gComputeProfilingCtx);
-		//TracyD3D12Destroy(gCopyProfilingCtx);
+		TracyD3D12Destroy(gComputeProfilingCtx);
 	});
 	StopRenderThread();
 	StopWorkerThreads();
 	CloseHandle(WaitEvent);
-
-	Importer.FreeScene();
 }
 

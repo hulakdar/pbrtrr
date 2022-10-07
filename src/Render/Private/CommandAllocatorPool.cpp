@@ -1,5 +1,6 @@
 #include "Render/CommandAllocatorPool.h"
 #include "Render/Context.h"
+#include "Render/RenderThread.h"
 #include "Containers/Queue.h"
 #include "Containers/ComPtr.h"
 #include "Containers/Map.h"
@@ -8,37 +9,30 @@
 
 #include <d3d12.h>
 
-struct WorkingAllocator
-{
-	uint64_t SafeToUseFrameId;
-	ComPtr<ID3D12CommandAllocator> Allocator;
-};
-
-TQueue<WorkingAllocator> gInFlightAllocators[4];
+TQueue<ComPtr<ID3D12CommandAllocator>> gInFlightAllocators[4];
 TracyLockable(Mutex, gFreeAllocatorsLock);
 //Mutex gFreeAllocatorsLock;
 
-ComPtr<ID3D12CommandAllocator> GetCommandAllocator(D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameID)
+ComPtr<ID3D12CommandAllocator> GetCommandAllocator(D3D12_COMMAND_LIST_TYPE Type)
 {
-	ComPtr<ID3D12CommandAllocator> Result = nullptr;
+	ComPtr<ID3D12CommandAllocator> Result;
 	{
 		ScopedLock AutoLock(gFreeAllocatorsLock);
-		if (!gInFlightAllocators[Type].empty() && gInFlightAllocators[Type].front().SafeToUseFrameId <= CurrentFrameID)
+		if (!gInFlightAllocators[Type].empty())
 		{
-			Result = MOVE(gInFlightAllocators[Type].front().Allocator);
+			Result = MOVE(gInFlightAllocators[Type].front());
 			gInFlightAllocators[Type].pop();
-		}
-		else
-		{
-			Result = CreateCommandAllocator(Type);
+			return Result;
 		}
 	}
-	CHECK(Result.Get(), "!?");
+	Result = CreateCommandAllocator(Type);
 	return Result;
 }
 
-void DiscardCommandAllocator(ComPtr<ID3D12CommandAllocator>& Allocator, D3D12_COMMAND_LIST_TYPE Type, uint64_t CurrentFrameID)
+void DiscardCommandAllocator(ComPtr<ID3D12CommandAllocator>& Allocator, D3D12_COMMAND_LIST_TYPE Type)
 {
 	ScopedLock AutoLock(gFreeAllocatorsLock);
-	gInFlightAllocators[Type].push(WorkingAllocator{CurrentFrameID + 4, MOVE(Allocator)});
+	EnqueueDelayedWork([Type, Allocator = MOVE(Allocator)]() mutable {
+		gInFlightAllocators[Type].push(MOVE(Allocator));
+	}, CurrentFrameTicket());
 }

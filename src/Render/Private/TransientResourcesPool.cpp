@@ -8,6 +8,7 @@
 #include "../Context.h"
 #include "Util/Debug.h"
 #include "Util/Util.h"
+#include "Threading/Mutex.h"
 
 #include <d3d12.h>
 
@@ -153,10 +154,6 @@ struct TransientTextureDescription {
 void GetTransientTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, D3D12_RESOURCE_STATES InitialState, D3D12_CLEAR_VALUE* ClearValue)
 {
 	TransientTextureDescription Desc = {};
-	CHECK(TexData.Width > 0
-       && TexData.Height > 0
-       && TexData.Width <= 65535
-       && TexData.Height <= 65535, "Transient resources can only be of certain size");
 
 	Desc.Width  = TexData.Width;
 	Desc.Height = TexData.Height;
@@ -225,29 +222,37 @@ void DiscardTransientTexture(TextureData& TexData)
 const u64 PoolPageSize = 1_kb;
 const u64 MaxPooledSize = PoolPageSize * 64;
 
-TArray<ComPtr<ID3D12Resource>> gBufferPools[3];
-TArray<u64> gPoolAvailabilityMasks[3];
+TracyLockable(Mutex, gPoolsLock);
+TDeque<ComPtr<ID3D12Resource>> gBufferPools[3];
+TDeque<u64> gPoolAvailabilityMasks[3];
 
+TracyLockable(Mutex, gLargeBuffersLock);
 TArray<ComPtr<ID3D12Resource>> gLargeBuffers;
 
 void GetTransientBuffer(PooledBuffer& Result, u64 Size, BufferType Type)
 {
-	Result.Size = (u8)Size;
+	CHECK(Size, "wtf?");
+	Result.Size = (u32)Size;
 	Result.Type = (u8)Type;
 	if (Size >= MaxPooledSize)
 	{
+		ZoneScopedN("Allocate large buffer");
 		ComPtr<ID3D12Resource> LargeBuffer = CreateBuffer(Size, Type);
 		Result.Resource = LargeBuffer.Get();
+		gLargeBuffersLock.lock();
 		gLargeBuffers.push_back(MOVE(LargeBuffer));
+		gLargeBuffersLock.unlock();
 		return;
 	}
 	u64 PoolIndex = Type;
 
-	TArray<ComPtr<ID3D12Resource>>& BufferPool = gBufferPools[PoolIndex];
-	TArray<u64>& PoolAvailabilityMask = gPoolAvailabilityMasks[PoolIndex];
+	auto& BufferPool = gBufferPools[PoolIndex];
+	auto& PoolAvailabilityMask = gPoolAvailabilityMasks[PoolIndex];
 
 	u64 MaskWidth = (Size + PoolPageSize - 1) / PoolPageSize;
 	u64 Mask = ~0ULL >> (64 - MaskWidth);
+
+	gPoolsLock.lock();
 	for (u64 i = 0; i < PoolAvailabilityMask.size(); ++i)
 	{
 		u64 AvailabilityMask = ~PoolAvailabilityMask[i];
@@ -265,6 +270,7 @@ void GetTransientBuffer(PooledBuffer& Result, u64 Size, BufferType Type)
 				Result.Resource = BufferPool[i].Get();
 				Result.Offset = (u16)BitIndex * PoolPageSize;
 				PoolAvailabilityMask[i] |= ShiftedMask;
+				gPoolsLock.unlock();
 				return;
 			}
 			AvailabilityMask &= 0ULL << BitIndex;
@@ -275,6 +281,7 @@ void GetTransientBuffer(PooledBuffer& Result, u64 Size, BufferType Type)
 	Result.Resource = Buffer.Get();
 	BufferPool.push_back(MOVE(Buffer));
 	PoolAvailabilityMask.push_back(Mask);
+	gPoolsLock.unlock();
 }
 
 void DiscardTransientBuffer(PooledBuffer& Buffer)
@@ -283,23 +290,23 @@ void DiscardTransientBuffer(PooledBuffer& Buffer)
 	{
 		u8 PoolIndex = Buffer.Type;
 
-		TArray<ComPtr<ID3D12Resource>>& BufferPool = gBufferPools[PoolIndex];
-		TArray<u64>& PoolAvailabilityMask = gPoolAvailabilityMasks[PoolIndex];
+		auto& BufferPool = gBufferPools[PoolIndex];
+		auto& PoolAvailabilityMask = gPoolAvailabilityMasks[PoolIndex];
 
 		u64 MaskWidth = (Buffer.Size + PoolPageSize - 1) / PoolPageSize;
 		u64 MaskShift = Buffer.Offset / PoolPageSize;
 		u64 Mask = ~0ULL >> (64 - MaskWidth);
-		for (u64 i = 0; i < BufferPool.size(); ++i)
-		{
-			if (BufferPool[i].Get() == Buffer.Get())
-			{
-				PoolAvailabilityMask[i] &= ~(Mask << MaskShift);
-				break;
+		auto It = std::find_if(BufferPool.begin(), BufferPool.end(),
+			[&Buffer](const ComPtr<ID3D12Resource>& Ptr) {
+				return Ptr.Get() == Buffer.Get();
 			}
-		}
+		);
+		CHECK(It != BufferPool.end(), "Unknown transient buffer");
+		_InterlockedAnd(&PoolAvailabilityMask[It - BufferPool.begin()], ~(Mask << MaskShift));
 	}
 	else
 	{
+		gLargeBuffersLock.lock();
 		auto It = std::find_if(gLargeBuffers.begin(), gLargeBuffers.end(),
 			[&Buffer](const ComPtr<ID3D12Resource>& Ptr) {
 				return Ptr.Get() == Buffer.Get();
@@ -307,6 +314,7 @@ void DiscardTransientBuffer(PooledBuffer& Buffer)
 		);
 		CHECK(It != gLargeBuffers.end(), "Unknown large buffer");
 		gLargeBuffers.erase_unsorted(It);
+		gLargeBuffersLock.unlock();
 	}
 	Buffer.Resource = nullptr;
 }
