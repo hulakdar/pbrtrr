@@ -19,5 +19,10 @@
 *.sln
 
 # Intermidiates
-./bin-int/
-./bin/
+bin-int/*
+bin/*
+thirdparty/bin-int/*
+thirdparty/bin/*
+
+# assets
+content/*
