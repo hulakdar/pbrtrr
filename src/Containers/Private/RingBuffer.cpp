@@ -1,31 +1,24 @@
 #include "Containers/RingBuffer.h"
 #include "Util/Debug.h"
 #include <wtypes.h>
+#include <Threading/Worker.h>
 
 // based on https://docs.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc2
 // with slight modifications
-void* AllocateRingBuffer(u64 Size, void** SecondaryView)
+void* AllocateRingBuffer(u64 Size)
 {
-    bool result;
-    HANDLE section = nullptr;
-    SYSTEM_INFO sysInfo;
-    void* ringBuffer = nullptr;
-    void* placeholder1 = nullptr;
-    void* placeholder2 = nullptr;
-    void* view1 = nullptr;
-    void* view2 = nullptr;
+    {
+		SYSTEM_INFO sysInfo;
+		GetSystemInfo (&sysInfo);
 
-    GetSystemInfo (&sysInfo);
-
-    if ((Size % sysInfo.dwAllocationGranularity) != 0) {
-        return nullptr;
+        CHECK((Size % sysInfo.dwAllocationGranularity) == 0);
     }
 
     //
     // Reserve a placeholder region where the buffer will be mapped.
     //
 
-    placeholder1 = (PCHAR) VirtualAlloc2 (
+    void* placeholder = (PCHAR) VirtualAlloc2 (
         nullptr,
         nullptr,
         2 * Size,
@@ -34,32 +27,36 @@ void* AllocateRingBuffer(u64 Size, void** SecondaryView)
         nullptr, 0
     );
 
-    CHECK(placeholder1 != nullptr, "VirtualAlloc2 failed");
+    CHECK(placeholder != nullptr, "VirtualAlloc2 failed");
 
     //
     // Split the placeholder region into two regions of equal size.
     //
 
-    result = VirtualFree (
-        placeholder1,
+    int result = VirtualFree (
+        placeholder,
         Size,
         MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER
     );
 
-    CHECK(result != FALSE,"VirtualFreeEx failed");
-
-    placeholder2 = (void*) ((ULONG_PTR) placeholder1 + Size);
+    CHECK(result != 0,"VirtualFreeEx failed");
+    if (result == 0)
+    {
+		std::string ErrorText = std::system_category().message(GetLastError());
+        DEBUG_BREAK();
+        //std::cout << ErrorText;
+    }
 
     //
     // Create a pagefile-backed section for the buffer.
     //
 
-    section = CreateFileMapping (
+    HANDLE section = CreateFileMapping (
         INVALID_HANDLE_VALUE,
         nullptr,
         PAGE_READWRITE,
         0,
-        Size, nullptr
+        DWORD(Size), nullptr
     );
 
 	CHECK(section != nullptr, "CreateFileMapping failed");
@@ -68,10 +65,10 @@ void* AllocateRingBuffer(u64 Size, void** SecondaryView)
     // Map the section into the first placeholder region.
     //
 
-    view1 = MapViewOfFile3 (
+    void* view1 = MapViewOfFile3 (
         section,
         nullptr,
-        placeholder1,
+        placeholder,
         0,
         Size,
         MEM_REPLACE_PLACEHOLDER,
@@ -82,19 +79,13 @@ void* AllocateRingBuffer(u64 Size, void** SecondaryView)
     CHECK(view1 != nullptr, "MapViewOfFile3 failed");
 
     //
-    // Ownership transferred, don’t free this now.
-    //
-
-    placeholder1 = nullptr;
-
-    //
     // Map the section into the second placeholder region.
     //
 
-    view2 = MapViewOfFile3 (
+    void* view2 = MapViewOfFile3 (
         section,
         nullptr,
-        placeholder2,
+        (void*) ((ULONG_PTR) placeholder + Size),
         0,
         Size,
         MEM_REPLACE_PLACEHOLDER,
@@ -102,21 +93,30 @@ void* AllocateRingBuffer(u64 Size, void** SecondaryView)
         nullptr, 0
     );
 
-    CHECK(view2 == nullptr, "MapViewOfFile3 failed");
+    CHECK(view2 != nullptr, "MapViewOfFile3 failed");
 
-    //
-    // Success, return both mapped views to the caller.
-    //
+    return view1;
+}
 
-    ringBuffer = view1;
-    if (SecondaryView)
-    {
-		*SecondaryView = view2;
-    }
+void FreeRingBuffer(void* Buffer, u64 Size)
+{
+    UnmapViewOfFile(Buffer);
+    UnmapViewOfFile((void*)(uintptr_t(Buffer) + Size));
+    VirtualFree(Buffer, 0, MEM_RELEASE);
+}
 
-    placeholder2 = nullptr;
-    view1 = nullptr;
-    view2 = nullptr;
+RingBufferGeneric::RingBufferGeneric(u64 InSize)
+{
+    Data = (u8*)AllocateRingBuffer(InSize);
+    Size = InSize;
+}
 
-    return ringBuffer;
+RingBufferGeneric::~RingBufferGeneric()
+{
+    FreeRingBuffer(Data, Size);
+}
+
+void* RingBufferGeneric::Aquire(u64 NumBytes)
+{
+    return Data + WriteOffset.fetch_add(NumBytes) % Size;
 }

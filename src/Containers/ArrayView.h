@@ -7,7 +7,7 @@ template <typename T>
 class TArrayView
 {
 public:
-	TArrayView(TArray<T>& Initializer)
+	TArrayView(const TArray<T>& Initializer)
 	{
 		Data = Initializer.data();
 		Size = Initializer.size();
@@ -15,7 +15,7 @@ public:
 
 	TArrayView(std::initializer_list<T> IL)
 	{
-		Data = (T*)std::data(IL);
+		Data = (T*)IL.begin();
 		Size = IL.size();
 	}
 
@@ -38,23 +38,33 @@ private:
 	const T* Data;
 	uint64_t Size;
 
-	struct ConstIterator
+	struct RandomAccessIterator
 	{
-		ConstIterator(const T* InPtr) : Ptr(InPtr) {}
+		using iterator_category = std::random_access_iterator_tag;
+		using difference_type = i64;
+		using value_type = T;
+
+		using pointer = T*;
+		using reference = T&;
+
+		RandomAccessIterator(const T* InPtr) : Ptr(InPtr) {}
 		const T& operator * () const { return *Ptr; }
 		const T* operator ->() const { return Ptr; }
 
-		ConstIterator& operator ++()    { Ptr++; return *this; }
-		ConstIterator& operator ++(int) { ConstIterator Tmp = *this; ++(*this); return Tmp; }
+		RandomAccessIterator& operator ++()    { Ptr++; return *this; }
+		RandomAccessIterator& operator ++(int) { RandomAccessIterator Tmp = *this; ++(*this); return Tmp; }
 
-		friend bool operator == (const ConstIterator& a, const ConstIterator& b) { return a.Ptr == b.Ptr; };
-		friend bool operator != (const ConstIterator& a, const ConstIterator& b) { return a.Ptr != b.Ptr; };
+		RandomAccessIterator& operator +=(difference_type N) {Ptr += N; return *this; }
+
+		friend bool operator == (const RandomAccessIterator& a, const RandomAccessIterator& b) { return a.Ptr == b.Ptr; };
+		friend bool operator != (const RandomAccessIterator& a, const RandomAccessIterator& b) { return a.Ptr != b.Ptr; };
+		friend difference_type operator - (const RandomAccessIterator& a, const RandomAccessIterator& b) { return a.Ptr - b.Ptr; };
 	private:
 		const T* Ptr;
 	};
 public:
-	ConstIterator begin() { return ConstIterator(Data); }
-	ConstIterator end() { return ConstIterator(Data + Size); }
+	RandomAccessIterator begin() { return RandomAccessIterator(Data); }
+	RandomAccessIterator end() { return RandomAccessIterator(Data + Size); }
 };
 
 using BinaryBlob = TArrayView<uint8_t>;

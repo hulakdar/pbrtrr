@@ -1,18 +1,23 @@
 #include "..\RenderThread.h"
 
 #include "Containers/Function.h"
+#include "Containers/Queue.h"
 #include "Threading/DedicatedThread.h"
 #include "Util/Util.h"
 #include "Render/CommandListPool.h"
-#include "Render/Context.h"
+#include "Render/RenderDX12.h"
 #include <d3d12.h>
 
-DedicatedThreadData	gRenderDedicatedThreadData;
-
-Thread::id GetRenderThreadID()
+struct DelayedWork
 {
-	return gRenderDedicatedThreadData.ThreadID;
-}
+	TicketGPU Ticket;
+	TFunction<void(void)> Work;
+};
+
+static TQueue<DelayedWork> gDelayedWork[4];
+static TracyLockable(Mutex, gDelayedWorkLock);
+
+static DedicatedThreadData gRenderDedicatedThreadData;
 
 void StartRenderThread()
 {
@@ -25,33 +30,11 @@ void StopRenderThread()
 	StopDedicatedThread(&gRenderDedicatedThreadData);
 }
 
-void EnqueueToRenderThread(TFunction<void(void)>&& RenderThreadWork)
-{
-	ZoneScoped;
-	EnqueueWork(&gRenderDedicatedThreadData, MOVE(RenderThreadWork));
-}
-
-TicketCPU EnqueueToRenderThreadWithTicket(TFunction<void(void)>&& RenderThreadWork)
-{
-	ZoneScoped;
-	return EnqueueWorkWithTicket(&gRenderDedicatedThreadData, MOVE(RenderThreadWork));
-}
-
-struct DelayedWork
-{
-	TicketGPU Ticket;
-	TFunction<void(void)> Work;
-};
-
-TQueue<DelayedWork> gDelayedWork[4];
-TracyLockable(Mutex, gDelayedWorkLock);
-//Mutex gDelayedWorkLock;
-
-void EnqueueDelayedWork(TFunction<void(void)>&& Work, const TicketGPU& Ticket)
+void EnqueueDelayedWork(TFunction<void(void)>&& Work, TicketGPU Ticket)
 {
 	ScopedLock AutoLock(gDelayedWorkLock);
 
-	gDelayedWork[Ticket.Type].push(
+	gDelayedWork[Ticket.QueueType].push(
 		DelayedWork {
 			Ticket,
 			MOVE(Work)
@@ -61,6 +44,7 @@ void EnqueueDelayedWork(TFunction<void(void)>&& Work, const TicketGPU& Ticket)
 
 void RunDelayedWork()
 {
+	ZoneScoped;
 	for (int i = 0; i < ArrayCount(gDelayedWork); ++i)
 	{
 		if (!gDelayedWork[i].empty())
@@ -76,7 +60,7 @@ void RunDelayedWork()
 			}
 			for (auto& Item : Work)
 			{
-				EnqueueToRenderThread(MOVE(Item));
+				Item();
 			}
 		}
 	}

@@ -1,26 +1,37 @@
 #pragma once
 #include "Common.h"
 
+#include "RenderForwardDeclarations.h"
+#include "Util/TypeInfo.h"
+
+#include <dxgiformat.h>
+
 struct TexID { u32 Value = 0; };
 
 struct TextureData
 {
 	TexID ID;
-	u16 Width  = MAXWORD;
-	u16 Height = MAXWORD;
-	u16 SRV    = MAXWORD;
-	u16 UAV    = MAXWORD;
-	u16 RTV    = MAXWORD;
-	u16 DSV    = MAXWORD;
+	u16 Width  = UINT16_MAX;
+	u16 Height = UINT16_MAX;
+	u16 SRV    = UINT16_MAX;
+	u16 UAV    = UINT16_MAX;
+	u16 RTV    = UINT16_MAX;
+	u16 DSV    = UINT16_MAX;
 	u8  Format = 0;
+	u8  NumMips = 0;
 	u8  Flags  = 0;
+	u8  SampleCount = 1;
 };
 
-struct ID3D12Resource;
+struct VirtualTexture
+{
+	TextureData TexData;
+	u16 StreamedTileIds[8]{};
+	u16 PackedId = (u16)~0U;
 
-TexID           StoreTexture(ID3D12Resource* Resource, const char* Name = "");
-ID3D12Resource* GetTextureResource(TexID Id);
-void            FreeTextureResource(TexID Id);
-const char*     GetTextureName(TexID Id);
-void            ReleaseTextures();
+	u16 NumStreamedMips : 3;
+	u16 NumStreamedIn : 3;
 
+	u16 NumTilesForPacked : 1;
+	u16 StreamingInProgress : 1;
+};

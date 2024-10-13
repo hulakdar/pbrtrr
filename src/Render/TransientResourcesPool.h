@@ -2,16 +2,17 @@
 
 #include "RenderForwardDeclarations.h"
 
-enum BufferType
+enum BufferType : u8
 {
 	BUFFER_GENERIC,
 	BUFFER_UPLOAD,
-	BUFFER_STAGING,
+	BUFFER_READBACK,
 };
 
 struct PooledBuffer
 {
 	ID3D12Resource* Resource = nullptr;
+	u8* CPUPtr = nullptr;
 	u32 Size = 0;
 	u16 Offset = 0;
 	u8  Type = 0;
@@ -19,10 +20,3 @@ struct PooledBuffer
 	ID3D12Resource* operator->() const { return Resource; }
 	ID3D12Resource* Get() const { return Resource; }
 };
-
-void GetTransientTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, D3D12_RESOURCE_STATES InitialState, D3D12_CLEAR_VALUE* ClearValue);
-void DiscardTransientTexture(TextureData& TexData);
-
-void GetTransientBuffer(PooledBuffer& Result, u64 Size, BufferType Type);
-void DiscardTransientBuffer(PooledBuffer& Buffer);
-

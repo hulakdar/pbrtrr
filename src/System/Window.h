@@ -4,12 +4,11 @@
 #include "Util/Debug.h"
 #include "Util/Util.h"
 
-#include "external/d3dx12.h"
+#include "Containers/BitSet.h"
+
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 #include <bitset>
-#include <Tracy.hpp>
-#include <backends/imgui_impl_glfw.h>
 
 namespace System
 {
@@ -32,7 +31,7 @@ public:
 	{
 		ZoneScoped;
 		mScrollOffset = Vec2{ 0, 0 };
-		mKeyboard.reset();
+		//mKeyboard.reset();
 
 		glfwPollEvents();
 		if (mKeyboard[GLFW_KEY_ESCAPE] == GLFW_PRESS)
@@ -47,12 +46,15 @@ public:
 
 	IVec2			mSize { 1280, 720 };
 	Vec2			mMousePosition { 0, 0 };
+	Vec2			mMouseOffset { 0, 0 };
 	Vec2			mScrollOffset { 0, 0 };
 
 	bool			mWindowStateDirty = false;
 
-	std::bitset<GLFW_MOUSE_BUTTON_LAST + 1>		mMouseButtons;
-	std::bitset<GLFW_KEY_LAST + 1>				mKeyboard;
+	TBitSet<GLFW_MOUSE_BUTTON_LAST + 1>		mMouseButtons;
+	TBitSet<GLFW_KEY_LAST + 1>				mKeyboard;
+
+	int mMods{ 0 };
 	 
 	HWND				mHwnd = nullptr;
 	GLFWwindow			*mHandle = nullptr;
@@ -63,7 +65,11 @@ private:
 		ZoneScoped;
 		double MouseX, MouseY;
 		glfwGetCursorPos(mHandle, &MouseX, &MouseY);
+
+		Vec2 OldMousePosition = mMousePosition;
 		mMousePosition = Vec2{(float)MouseX, (float)MouseY};
+
+		mMouseOffset = mMousePosition - OldMousePosition;
 	}
 };
 

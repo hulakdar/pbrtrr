@@ -21,3 +21,9 @@
 [submodule "thirdparty/FidelityFX-LPM"]
 	path = thirdparty/FidelityFX-LPM
 	url = https://github.com/GPUOpen-Effects/FidelityFX-LPM.git
+[submodule "thirdparty/cityhash"]
+	path = thirdparty/cityhash
+	url = https://github.com/google/cityhash.git
+[submodule "thirdparty/meshoptimizer"]
+	path = thirdparty/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer

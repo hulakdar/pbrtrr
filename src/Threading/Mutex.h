@@ -1,11 +1,11 @@
 #pragma once
-#include <mutex>
-#include <shared_mutex>
-#include <Tracy.hpp>
+
 #include "Containers/UniquePtr.h"
 #include "Util/Debug.h"
 
-DISABLE_OPTIMIZATION
+#include <mutex>
+#include <shared_mutex>
+#include <tracy/Tracy.hpp>
 
 using Mutex      = std::mutex;
 

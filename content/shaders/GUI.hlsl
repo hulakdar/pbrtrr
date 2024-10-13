@@ -5,12 +5,12 @@ struct VertexShaderOutput
     float2 UV : TEXCOORD;
 };
 
-struct PerFrameConstants
+cbuffer PushConstants : register(b0);
 {
 	float2 ScreenSize;
+	int TexID;
+	int Flags;
 };
-
-ConstantBuffer<PerFrameConstants> Constants : register(b0);
 
 VertexShaderOutput MainVS(
 	float2 position : POSITION,
@@ -20,7 +20,7 @@ VertexShaderOutput MainVS(
 {
 	VertexShaderOutput output;
 
-	float2 Scaled = (position / Constants.ScreenSize);
+	float2 Scaled = (position / PushConstants.ScreenSize);
 	float2 Final = Scaled * float2(2, -2) + float2(-1, 1);
 
 	output.Color = color;
@@ -30,11 +30,19 @@ VertexShaderOutput MainVS(
 	return output;
 }
 
-Texture2D<float4>    Texture : register(t0);
-SamplerState BilinearSampler : register(s0);
+Texture2D<float4>     SRVs[] : register(t0);
+SamplerState	PointSampler : register(s0);
+SamplerState BilinearSampler : register(s1);
 
 float4 MainPS(VertexShaderOutput In) : SV_TARGET
 {
-	return In.Color * Texture.Sample(BilinearSampler, In.UV).x;
+	if ((PushConstants.Flags & 0x80000000) != 0)
+	{
+		return In.Color * SRVs[PushConstants.TexID].SampleLevel(BilinearSampler, In.UV, PushConstants.Flags & 0xff);
+	}
+	else
+	{
+		return In.Color * SRVs[PushConstants.TexID].SampleLevel(PointSampler, In.UV, PushConstants.Flags & 0xff);
+	}
 }
 

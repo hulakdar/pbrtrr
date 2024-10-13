@@ -4,12 +4,15 @@ struct VertexShaderOutput
     float2 UV : TEXCOORD;
 };
 
-VertexShaderOutput MainVS(float4 position : POSITION)
-	
+VertexShaderOutput MainVS(uint id : SV_VertexID)
 {
 	VertexShaderOutput output;
 
-	output.Position = position;
+	float2 position = float2(-1.0, -3.0);
+	position += lerp(float2(0,0), float2(0,4), id == 1);
+	position += lerp(float2(0,0), float2(4,4), id == 2);
+
+	output.Position = float4(position, 0, 1);
 	output.UV = position.xy * float2(0.5, -0.5) + 0.5;
 
 	return output;

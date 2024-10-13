@@ -1,18 +1,13 @@
-#include "Common.h"
-
-#include "Containers/ComPtr.h"
-#include "Containers/Map.h"
-#include "Containers/Array.h"
-#include "../TransientResourcesPool.h"
-#include "../Texture.h"
-#include "../Context.h"
-#include "Util/Debug.h"
-#include "Util/Util.h"
-#include "Threading/Mutex.h"
-
 #include <d3d12.h>
 
-DXGI_FORMAT GetTypelessFormat(DXGI_FORMAT Format)
+#include "Common.h"
+#include "Containers/Map.h"
+#include "Containers/Array.h"
+#include "Containers/ComPtr.h"
+#include "Render/Texture.h"
+#include "Threading/Mutex.h"
+
+static DXGI_FORMAT GetTypelessFormat(DXGI_FORMAT Format)
 {
 	switch (Format)
 	{
@@ -136,18 +131,19 @@ DXGI_FORMAT GetTypelessFormat(DXGI_FORMAT Format)
 	}
 }
 
-TMap<u64, TArray<TexID>> gFreeTextures;
-TMap<u32, TArray<TextureData>> gResourceViews;
+static TMap<u64, TArray<TexID>> gFreeTextures;
+static TMap<u32, TArray<TextureData>> gResourceViews;
 
 struct TransientTextureDescription {
 	u16 Width; // 64k max
 	u16 Height; // 64k max
 	u8 Format;
 	u8 Flags;
+	u8 NumMips;
 
 	u64 Hash()
 	{
-		return (u64)Width | ((u64)Height << 16) | ((u64)Format << 24) | ((u64)Flags << 32);
+		return (u64)Width | ((u64)Height << 16) | ((u64)Format << 24) | ((u64)Flags << 32) | ((u64)NumMips << 40);
 	}
 };
 
@@ -159,6 +155,8 @@ void GetTransientTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, D3D12
 	Desc.Height = TexData.Height;
 	Desc.Format = (u8)GetTypelessFormat((DXGI_FORMAT)TexData.Format);
 	Desc.Flags =  (u8)Flags;
+	Desc.NumMips = TexData.NumMips;
+
 	TArray<TexID>& CompatibleResources = gFreeTextures[Desc.Hash()];
 	TexID Result;
 	if (!CompatibleResources.empty())
@@ -183,12 +181,14 @@ void GetTransientTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, D3D12
 	{
 		ResourceViews.resize(Index + 1);
 	}
+
 	TextureData& View = ResourceViews[Index];
 	View.ID     = Result;
 	View.Width  = Desc.Width;
 	View.Height = Desc.Height;
 	View.Format = Desc.Format + Index;
 	View.Flags  = (u8)Desc.Flags;
+	View.NumMips = Desc.NumMips;
 	if (Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET && View.RTV == MAXWORD)
 	{
 		CreateRTV(View);
@@ -203,7 +203,7 @@ void GetTransientTexture(TextureData& TexData, D3D12_RESOURCE_FLAGS Flags, D3D12
 	}
 	if (!(Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) && View.SRV == MAXWORD)
 	{
-		CreateSRV(View);
+		CreateSRV(View, false);
 	}
 	TexData = View;
 }
@@ -219,26 +219,35 @@ void DiscardTransientTexture(TextureData& TexData)
 	CompatibleResources.push_back(TexData.ID);
 }
 
-const u64 PoolPageSize = 1_kb;
-const u64 MaxPooledSize = PoolPageSize * 64;
+static const u64 PoolPageSize = 1_kb;
+static const u64 MaxPooledSize = PoolPageSize * 64;
 
-TracyLockable(Mutex, gPoolsLock);
-TDeque<ComPtr<ID3D12Resource>> gBufferPools[3];
-TDeque<u64> gPoolAvailabilityMasks[3];
+static TracyLockable(Mutex, gPoolsLock);
 
-TracyLockable(Mutex, gLargeBuffersLock);
-TArray<ComPtr<ID3D12Resource>> gLargeBuffers;
+struct PooledPageResource
+{
+	TComPtr<ID3D12Resource> Resource;
+	u8* CPUPtr;
+};
+
+static TDeque<PooledPageResource> gBufferPools[3];
+static TDeque<u64> gPoolAvailabilityMasks[3];
+
+static TracyLockable(Mutex, gLargeBuffersLock);
+static TArray<TComPtr<ID3D12Resource>> gLargeBuffers;
 
 void GetTransientBuffer(PooledBuffer& Result, u64 Size, BufferType Type)
 {
 	CHECK(Size, "wtf?");
 	Result.Size = (u32)Size;
 	Result.Type = (u8)Type;
-	if (Size >= MaxPooledSize)
+	if (Size >= MaxPooledSize - PoolPageSize)
 	{
 		ZoneScopedN("Allocate large buffer");
-		ComPtr<ID3D12Resource> LargeBuffer = CreateBuffer(Size, Type);
+		TComPtr<ID3D12Resource> LargeBuffer = CreateBuffer(Size, Type);
 		Result.Resource = LargeBuffer.Get();
+		Result.Resource->Map(0, nullptr, (void**)&Result.CPUPtr);
+		CHECK(Result.CPUPtr);
 		gLargeBuffersLock.lock();
 		gLargeBuffers.push_back(MOVE(LargeBuffer));
 		gLargeBuffersLock.unlock();
@@ -252,41 +261,57 @@ void GetTransientBuffer(PooledBuffer& Result, u64 Size, BufferType Type)
 	u64 MaskWidth = (Size + PoolPageSize - 1) / PoolPageSize;
 	u64 Mask = ~0ULL >> (64 - MaskWidth);
 
-	gPoolsLock.lock();
 	for (u64 i = 0; i < PoolAvailabilityMask.size(); ++i)
 	{
-		u64 AvailabilityMask = ~PoolAvailabilityMask[i];
-		if (PopulationCount64(AvailabilityMask) < MaskWidth)
+		u64 AvailabilityMask = PoolAvailabilityMask[i];
+		u64 AvailabilityMaskForBitscan = ~AvailabilityMask;
+		if (_mm_popcnt_u64(AvailabilityMaskForBitscan) < MaskWidth)
 		{
 			continue;
 		}
 		unsigned long BitIndex = 0;
-		bool Continue = _BitScanForward64(&BitIndex, AvailabilityMask);
-		while (Continue)
+		bool Continue = _BitScanForward64(&BitIndex, AvailabilityMaskForBitscan);
+		while (Continue && __popcnt64(AvailabilityMaskForBitscan) >= MaskWidth)
 		{
 			u64 ShiftedMask = (Mask << BitIndex);
-			if ((ShiftedMask & AvailabilityMask) == ShiftedMask)
+			u64 Test = (ShiftedMask & AvailabilityMaskForBitscan);
+			bool TestPassed = Test == ShiftedMask;
+			if (TestPassed)
 			{
-				Result.Resource = BufferPool[i].Get();
-				Result.Offset = (u16)BitIndex * PoolPageSize;
-				PoolAvailabilityMask[i] |= ShiftedMask;
-				gPoolsLock.unlock();
-				return;
+				CHECK((ShiftedMask & AvailabilityMask) == 0);
+				u64 OldValue = _InterlockedCompareExchange(&PoolAvailabilityMask[i], ShiftedMask | AvailabilityMask, AvailabilityMask);
+				bool OldValueCoresponds = OldValue == AvailabilityMask;
+				if (OldValueCoresponds)
+				{
+					Result.Resource = BufferPool[i].Resource.Get();
+					Result.Offset = (u16)BitIndex * PoolPageSize;
+					Result.CPUPtr = BufferPool[i].CPUPtr + Result.Offset;
+					return;
+				}
 			}
-			AvailabilityMask &= 0ULL << BitIndex;
-			Continue = _BitScanForward64(&BitIndex, AvailabilityMask);
+			AvailabilityMask = PoolAvailabilityMask[i];
+			u64 HowMuch = _tzcnt_u64(AvailabilityMask >> BitIndex);
+			AvailabilityMaskForBitscan = ~(AvailabilityMask | (~0ULL >> (64 - BitIndex - HowMuch)));
+			Continue = _BitScanForward64(&BitIndex, AvailabilityMaskForBitscan);
 		}
 	}
-	ComPtr<ID3D12Resource> Buffer = CreateBuffer(MaxPooledSize, Type);
-	Result.Resource = Buffer.Get();
-	BufferPool.push_back(MOVE(Buffer));
+	TComPtr<ID3D12Resource> Resource = CreateBuffer(MaxPooledSize, Type);
+	Result.Resource = Resource.Get();
+	Resource->Map(0, nullptr, (void**)&Result.CPUPtr);
+
+	CHECK(Result.CPUPtr);
+
+	gPoolsLock.lock();
+	PooledPageResource& R = BufferPool.push_back();
+	R.Resource = MOVE(Resource);
+	R.CPUPtr = Result.CPUPtr;
 	PoolAvailabilityMask.push_back(Mask);
 	gPoolsLock.unlock();
 }
 
 void DiscardTransientBuffer(PooledBuffer& Buffer)
 {
-	if (Buffer.Size < MaxPooledSize)
+	if (Buffer.Size < MaxPooledSize - PoolPageSize)
 	{
 		u8 PoolIndex = Buffer.Type;
 
@@ -297,8 +322,8 @@ void DiscardTransientBuffer(PooledBuffer& Buffer)
 		u64 MaskShift = Buffer.Offset / PoolPageSize;
 		u64 Mask = ~0ULL >> (64 - MaskWidth);
 		auto It = std::find_if(BufferPool.begin(), BufferPool.end(),
-			[&Buffer](const ComPtr<ID3D12Resource>& Ptr) {
-				return Ptr.Get() == Buffer.Get();
+			[&Buffer](const PooledPageResource& Ptr) {
+				return Ptr.Resource.Get() == Buffer.Get();
 			}
 		);
 		CHECK(It != BufferPool.end(), "Unknown transient buffer");
@@ -308,7 +333,7 @@ void DiscardTransientBuffer(PooledBuffer& Buffer)
 	{
 		gLargeBuffersLock.lock();
 		auto It = std::find_if(gLargeBuffers.begin(), gLargeBuffers.end(),
-			[&Buffer](const ComPtr<ID3D12Resource>& Ptr) {
+			[&Buffer](const TComPtr<ID3D12Resource>& Ptr) {
 				return Ptr.Get() == Buffer.Get();
 			}
 		);

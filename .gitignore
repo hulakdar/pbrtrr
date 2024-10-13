@@ -21,8 +21,7 @@
 # Intermidiates
 bin-int/*
 bin/*
-thirdparty/bin-int/*
-thirdparty/bin/*
-
-# assets
+generated/*
+cooked/*
 content/*
+!content/shaders/*

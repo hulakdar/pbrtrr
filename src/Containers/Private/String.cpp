@@ -1,7 +1,13 @@
 #include "../String.h"
-#include "external/stb/stb_sprintf.h"
+#include "../StringView.h"
 
 #include <corecrt_wstdio.h>
+#include <Util/Math.h>
+//#include <EASTL/functional.h>
+#include <stb/stb_sprintf.h>
+
+#include <tracy/Tracy.hpp>
+#include <nmmintrin.h>
 
 WString StringFromFormat(const wchar_t* Format, ...)
 {
@@ -19,27 +25,62 @@ WString StringFromFormat(const wchar_t* Format, ...)
 	return WString();
 }
 
-String StringFromFormat(const char* Format, ...)
+u32 HashString32(const char* In, u64 Size)
 {
-	va_list ArgList;
+	ZoneScoped;
 
-	va_start(ArgList, Format);
-	int CharLen = stbsp_vsnprintf(nullptr, 0, Format, ArgList);
-	va_end(ArgList);
+	//ZoneNameF("Hash32 '%.*s'", (int)Size, In);
 
-	String Result(CharLen + 1, '\0');
-
-	va_start(ArgList, Format);
-	stbsp_vsnprintf(Result.data(), (int)Result.length(), Format, ArgList);
-	va_end(ArgList);
-
+	u32 Result = ~0U;
+	while (Size >= 8)
+	{
+		Result = _mm_crc32_u64(Result, *(u64*)In);
+		In += 8;
+		Size -=8;
+	}
+	while (Size >= 4)
+	{
+		Result = _mm_crc32_u32(Result, *(u32*)In);
+		In += 4;
+		Size -= 4;
+	}
+	while (Size >= 2)
+	{
+		Result = _mm_crc32_u16(Result, *(u16*)In);
+		In += 2;
+		Size -= 2;
+	}
+	while (Size >= 1)
+	{
+		Result = _mm_crc32_u8(Result, *In);
+		In += 1;
+		Size -= 1;
+	}
 	return Result;
 }
 
-WString ToWide(const StringView& Narrow)
+u32 HashString32(StringView In)
 {
-	WString Result(Narrow.size(), L'\0');
-	mbstowcs( Result.data(), Narrow.data(), Result.size());
+	return HashString32(In.data(), In.size());
+}
+
+String StringFromFormat(const char* Format, ...)
+{
+	String FormatPadded(Format);
+	FormatPadded.append(4,'\0');
+
+	va_list ArgList;
+
+	va_start(ArgList, Format);
+	int CharLen = stbsp_vsnprintf(nullptr, 0, FormatPadded.c_str(), ArgList);
+	va_end(ArgList);
+
+	String Result(CharLen, ' ');
+
+	va_start(ArgList, Format);
+	stbsp_vsnprintf(Result.data(), (int)CharLen + 1, FormatPadded.c_str(), ArgList);
+	va_end(ArgList);
+
 	return Result;
 }
 

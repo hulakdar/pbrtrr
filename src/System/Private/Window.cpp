@@ -1,7 +1,7 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
+#include <backends/imgui_impl_glfw.h>
 #include "System/Window.h"
 
-#include <backends/imgui_impl_glfw.h>
 
 namespace System {
 
@@ -9,7 +9,8 @@ namespace System {
 
 		void Error(int error, const char* description)
 		{
-			Debug::Print(error, ": ", description);
+			printf("%d : %s\n", error, description);
+			//Debug::Print(error, ": ", description);
 			//DEBUG_BREAK();
 		}
 
@@ -42,8 +43,6 @@ namespace System {
 			WindowSize(window, width, height);
 		}
 
-		//void WindowMaximized(GLFWwindow* window, int maximized)
-
 		void Scroll(GLFWwindow* window, double xoffset, double yoffset)
 		{
 			Window *WindowPtr = (Window*)glfwGetWindowUserPointer(window);
@@ -55,7 +54,8 @@ namespace System {
 		{
 			Window *WindowPtr = (Window*)glfwGetWindowUserPointer(window);
 
-			WindowPtr->mKeyboard[key] = true;
+			WindowPtr->mKeyboard[key] = action == GLFW_PRESS || action == GLFW_REPEAT;
+			WindowPtr->mMods = mods;
 			ImGui_ImplGlfw_KeyCallback(window, key, scancode, action, mods);
 		}
 
@@ -101,9 +101,6 @@ void System::Window::Init()
 	glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
 	glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
 	glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
-	 
-	//mSize.x = mode->width;
-	//mSize.y = mode->height;
 
 	mHandle = glfwCreateWindow(mSize.x, mSize.y, "pbrtrr", nullptr, NULL);
 	CHECK(mHandle != nullptr, "GLFW failed to create a window.");

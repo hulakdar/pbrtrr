@@ -1,35 +1,24 @@
 #include "Threading/DedicatedThread.h"
-#include "Threading/Worker.h"
 #include "Containers/Map.h"
-#include "Threading/Thread.h"
 #include "Util/Util.h"
-#include <windows.h>
 #include <unordered_set>
 #include <Util/Debug.h>
 #include <limits>
-#include <array>
 
-using TicketType = decltype(TicketCPU().Value);
-const u64 NumBitsForTickets = std::numeric_limits<TicketType>::max() + 1;
-const u64 NumBitsInShared = 64;
+#include <Threading/Private/Worker.Declarations.h>
 
 std::atomic<TicketType> gCurrentTicketId;
 std::array<std::atomic<u64>, NumBitsForTickets / NumBitsInShared> gSharedTickets;
 
 namespace {
-	bool ThreadShouldExit(DedicatedThreadData *DedicatedThread)
-	{
-		return DedicatedThread->ThreadShouldStop && DedicatedThread->WorkItems.empty();
-	}
-
 	void PopAndExecute(DedicatedThreadData *DedicatedThread)
 	{
-		UniqueMovableLock Lock(DedicatedThread->ItemsLock);
 		while (true)
 		{
+			UniqueMovableLock Lock(DedicatedThread->WakeUpLock);
 			bool HasWork = DedicatedThread->WakeUp->wait_for(Lock, std::chrono::microseconds(DedicatedThread->SleepMicrosecondsWhenIdle),
 				[DedicatedThread]() {
-					return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.empty();
+					return DedicatedThread->ThreadShouldStop || !DedicatedThread->WorkItems.Empty();
 				}
 			);
 
@@ -40,21 +29,16 @@ namespace {
 
 			if (DedicatedThread->ThreadShouldStealWork)
 			{
-				Lock.unlock();
 				StealWork();
-				Lock.lock();
 			}
 		}
 
-		if (DedicatedThread->WorkItems.empty())
+		WorkItem Item;
+		bool HasWork = DedicatedThread->WorkItems.Pop(Item);
+		if (HasWork)
 		{
-			return;
+			ExecuteItem(Item);
 		}
-
-		WorkItem Item = MOVE(DedicatedThread->WorkItems.front());
-		DedicatedThread->WorkItems.pop();
-		Lock.unlock();
-		ExecuteItem(Item);
 	}
 
 	void DedicatedThreadProc(DedicatedThreadData* DedicatedThread)
@@ -66,12 +50,6 @@ namespace {
 		}
 	}
 }
-
-Thread::id GetCurrentThreadID()
-{
-	return std::this_thread::get_id();
-}
-
 void ExecuteItem(WorkItem& Item)
 {
 	{
@@ -95,7 +73,7 @@ void ExecuteItem(WorkItem& Item)
 void StartDedicatedThread(DedicatedThreadData* DedicatedThread, const String& ThreadName, u64 AffinityMask)
 {
 	DedicatedThread->ThreadName = ThreadName;
-	LockableName(DedicatedThread->ItemsLock.Ptr->Lock, ThreadName.c_str(), ThreadName.size());
+	LockableName(DedicatedThread->WakeUpLock.Ptr->Lock, ThreadName.c_str(), ThreadName.size());
 
 	DedicatedThread->ActualThread = Thread(DedicatedThreadProc, DedicatedThread);
 	DedicatedThread->ThreadID = DedicatedThread->ActualThread.get_id();
@@ -130,40 +108,64 @@ void WaitForCompletion(TicketCPU WorkDoneTicket)
 	}
 }
 
-void EnqueueWork(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work)
-{
-	ScopedMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
-	DedicatedThread->WorkItems.push({ MOVE(Work), TicketCPU(), false});
-	DedicatedThread->WakeUp->notify_one();
-}
-
-TicketCPU EnqueueWorkWithTicket(DedicatedThreadData* DedicatedThread, TFunction<void(void)>&& Work)
-{
-	ZoneScoped;
-	TicketCPU Result { gCurrentTicketId++ };
-
-	u64 Shift = Result.Value % NumBitsInShared;
-	u64 Mask = (1ULL << Shift);
-	u64 Test = gSharedTickets[Result.Value / NumBitsInShared].load(std::memory_order_acquire) & Mask;
-	CHECK(Test == 0, "Ticket bit already set");
-	gSharedTickets[Result.Value / NumBitsInShared].fetch_or(Mask, std::memory_order_release);
-
-	ScopedMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
-	DedicatedThread->WorkItems.push({ MOVE(Work), Result, true });
-	DedicatedThread->WakeUp->notify_one();
-
-	return Result;
-}
-
 void   ExecutePendingWork(DedicatedThreadData* DedicatedThread)
 {
-	while(!DedicatedThread->WorkItems.empty())
+	WorkItem Item;
+	while(DedicatedThread->WorkItems.Pop(Item))
 	{
-		UniqueMovableLock ItemsAutoLock(DedicatedThread->ItemsLock);
-		WorkItem Work = MOVE(DedicatedThread->WorkItems.front());
-		DedicatedThread->WorkItems.pop();
-		ItemsAutoLock.unlock();
-		ExecuteItem(Work);
+		ExecuteItem(Item);
 	}
+}
+
+TQueue<WorkItem>* ExchangeQueue::Aquire()
+{
+	TQueue<WorkItem>* Q = nullptr;
+	while (Q == nullptr)
+	{
+		Q = Queue->exchange(nullptr, std::memory_order_acquire);
+	}
+	return Q;
+}
+
+void ExchangeQueue::Release(TQueue<WorkItem>* Q)
+{
+	Queue->store(Q, std::memory_order_release);
+}
+
+void ExchangeQueue::Emplace(WorkWrapper&& Item, TicketCPU Ticket, bool TicketValid)
+{
+	auto* Q = Aquire();
+	Q->emplace(MOVE(Item), Ticket, TicketValid);
+	Release(Q);
+}
+
+bool ExchangeQueue::Pop(WorkItem& Result)
+{
+	if (auto* Q = Queue->exchange(nullptr, std::memory_order_relaxed))
+	{
+		if (Q->empty())
+		{
+			Release(Q);
+			return false;
+		}
+		Result = MOVE(Q->front());
+		Q->pop();
+		Release(Q);
+		return true;
+	}
+	return false;
+}
+
+bool ExchangeQueue::Empty()
+{
+	if (TQueue<WorkItem>* Q = Queue->load(std::memory_order_relaxed))
+	{
+		return Q->empty();
+	}
+
+	TQueue<WorkItem>* Q = Aquire();
+	bool Result = Q->empty();
+	Release(Q);
+	return Result;
 }
 

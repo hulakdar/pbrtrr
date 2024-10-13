@@ -2,20 +2,26 @@
 
 #include <Threading/DedicatedThread.h>
 
-void StartRenderThread();
-void StopRenderThread();
+extern DedicatedThreadData	gRenderDedicatedThreadData;
 
-Thread::id GetRenderThreadID();
+template <typename T>
+void EnqueueToRenderThread(T&& Work)
+{
+	ZoneScoped;
+#if NO_WORKERS
+	Work();
+	return;
+#endif
+	EnqueueWork(&gRenderDedicatedThreadData, MOVE(Work));
+}
 
-u64 GetCurrentFrameID();
-void NotifyCompletedFrameFence(u64 FrameID);
-void StartRenderThreadFrame(u64 FrameID);
-void EndRenderThreadFrame();
-
-void EnqueueToRenderThread(TFunction<void(void)>&&);
-TicketCPU EnqueueToRenderThreadWithTicket(TFunction<void(void)>&& RenderThreadWork);
-
-struct TicketGPU;
-
-void EnqueueDelayedWork(TFunction<void(void)>&& Work, const TicketGPU& Ticket);
-void RunDelayedWork();
+template <typename T>
+TicketCPU EnqueueToRenderThreadWithTicket(T&& Work)
+{
+	ZoneScoped;
+#if NO_WORKERS
+	Work();
+	return TicketCPU{ 0 };
+#endif
+	return EnqueueWorkWithTicket(&gRenderDedicatedThreadData, MOVE(Work));
+}

@@ -1,10 +1,16 @@
 #pragma once
-#include <EASTL/internal/move_help.h>
+#include "Common.h"
 
-#define MOVE(x) EASTL_MOVE_INLINE(x)
+namespace pbrtrr {
+template <typename T> struct remove_reference     { using type = T; };
+template <typename T> struct remove_reference<T&> { using type = T; };
+template <typename T> struct remove_reference<T&&>{ using type = T; };
+}
+
+#define MOVE(x) static_cast<typename pbrtrr::remove_reference<decltype(x)>::type&&>(x)
 
 template <typename T>
-T ReadAndAdvance(uint8_t*& DataPtr)
+T ReadAndAdvance(u8*& DataPtr)
 {
 	T Result = *(T*)DataPtr;
 	DataPtr += sizeof(T);
@@ -12,21 +18,47 @@ T ReadAndAdvance(uint8_t*& DataPtr)
 }
 
 template <typename T>
-void WriteAndAdvance(uint8_t*& DataPtr, const T& Data)
+void WriteAndAdvance(u8*& DataPtr, const T& Data)
 {
-	T* Result = (T*)DataPtr;
-	*Result = Data;
+	T* Dest = (T*)DataPtr;
+	memcpy(Dest, &Data, sizeof(T));
 	DataPtr += sizeof(T);
 }
 
-//template <typename T, int Count>
-//int ArrayCount(T (&)[Count]) { return Count; }
-#define ArrayCount(x) _countof(x)
+template <typename T>
+void WriteAndAdvanceContainer(const T& Container, u8*& Memory)
+{
+	u64 Hash = typeid(T).hash_code();
+	WriteAndAdvance<u64>(Memory, Hash);
 
-template <typename T, typename C>
-T& RandomElement(C& Container) { return Container[rand() % Container.size()]; }
+	u64 Size = Container.size();
+	WriteAndAdvance<u64>(Memory, Size);
+	for (const auto& Element : Container)
+	{
+		WriteAndAdvance(Memory, Element);
+	}
+}
+
+template <typename T>
+void WriteContainer(const T& Container, u8* Memory)
+{
+	WriteAndAdvanceContainer(Container, Memory);
+}
+
+template <typename T>
+u64 MemorySizeForContainer(const T& Container)
+{
+	return Container.size() * sizeof(*Container.begin()) + sizeof(u64) * 2;
+}
+
+//template <typename T, int Count>
+//constexpr int ArrayCount(T (&)[Count]) { return Count; }
+
+#define ArrayCount(x) (sizeof(x) / sizeof(x[0]))
+
+//#define ArrayCount(x) _countof(x)
 
 // size custom literal
-constexpr size_t operator "" _kb(size_t kilobytes) { return kilobytes * 1024; }
-constexpr size_t operator "" _mb(size_t megabytes) { return megabytes * 1024_kb; }
-constexpr size_t operator "" _gb(size_t gigabytes) { return gigabytes * 1024_mb; }
+constexpr u64 operator ""_kb(unsigned long long int kilobytes) { return kilobytes * 1024; }
+constexpr u64 operator ""_mb(unsigned long long int megabytes) { return megabytes * 1024*1024; }
+constexpr u64 operator ""_gb(unsigned long long int gigabytes) { return gigabytes * 1024*1024*1024; }

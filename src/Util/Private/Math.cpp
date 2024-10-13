@@ -1,6 +1,9 @@
 #include "Util/Math.h"
 #include "Util/Debug.h"
 
+#include <smmintrin.h>
+#include <math.h>
+
 namespace {
 	uint32_t AsUint(float x) {
 		return *(uint32_t*)&x;
@@ -56,7 +59,10 @@ namespace {
 
 Matrix4::Matrix4(float* Src)
 {
-	::memcpy(&m00, Src, sizeof(*this));
+	_mm_store_ps(&m00, _mm_load_ps(Src));
+	_mm_store_ps(&m10, _mm_load_ps(Src + 4));
+	_mm_store_ps(&m20, _mm_load_ps(Src + 8));
+	_mm_store_ps(&m30, _mm_load_ps(Src + 12));
 }
 
 Vec4 Matrix4::Row(int Index) const
@@ -74,10 +80,10 @@ Vec4 Matrix4::Column(int Index) const
 	return Vec4{ Ptr[0], Ptr[4], Ptr[8], Ptr[12]};
 }
 
-Matrix4& Matrix4::operator*=(const Matrix4& Other)
+float Lerp(float A, float B, float t)
 {
-	*this = *this * Other;
-	return *this;
+	t = Clamp(t, 0.f, 1.f);
+	return A * (1 - t) + B * t;
 }
 
 float Dot(const Vec2& A, const Vec2& B)
@@ -91,8 +97,6 @@ float Dot(const Vec3& A, const Vec3& B)
 }
 
 #if 1
-
-#include <immintrin.h>
 
 // linear combination:
 // a[0] * B.row[0] + a[1] * B.row[1] + a[2] * B.row[2] + a[3] * B.row[3]
@@ -133,11 +137,12 @@ Matrix4 operator*(const Matrix4& A, const Matrix4& B)
 
 float Dot(const Vec4& A, const Vec4& B)
 {
-	__m128 VecResult = _mm_dp_ps(_mm_load_ps(&A.x), _mm_load_ps(&B.x), 255);
+	__m128 VecResult = _mm_dp_ps(_mm_load_ps(&A.x), _mm_load_ps(&B.x), 0xFF);
 	float Result[4];
 	_mm_store_ps(Result, VecResult);
 	return Result[0];
 }
+
 #else
 
 Matrix4 operator*(const Matrix4& A, const Matrix4& B)
@@ -158,6 +163,52 @@ float Dot(const Vec4& A, const Vec4& B)
 
 #endif
 
+Matrix4& Matrix4::operator*=(const Matrix4& Other)
+{
+	*this = *this * Other;
+	return *this;
+}
+
+Vec3 operator*(const Vec3& A, const Matrix4& B)
+{
+	return Vec3{
+		Dot(A, B.Row(0)),
+		Dot(A, B.Row(1)),
+		Dot(A, B.Row(2))
+	};
+}
+
+Vec4 operator*(const Vec4& A, const Matrix4& B)
+{
+	return Vec4{
+		Dot(A, B.Row(0)),
+		Dot(A, B.Row(1)),
+		Dot(A, B.Row(2))
+	};
+}
+
+float DistanceSquared(const Vec4& A, const Vec4& B)
+{
+	Vec4 Result{A.x - B.x, A.y - B.y, A.z - B.z, A.w - B.w};
+	return Dot(Result, Result);
+}
+
+Vec2 operator-(const Vec2& A, const Vec2& B)
+{
+	return Vec2{
+		A.x - B.x,
+		A.y - B.y
+	};
+}
+
+Vec2 operator+(const Vec2& A, const Vec2& B)
+{
+	return Vec2{
+		A.x + B.x,
+		A.y + B.y
+	};
+}
+
 Vec3 operator-(const Vec3& A, const Vec3& B)
 {
 	return Vec3{
@@ -167,9 +218,18 @@ Vec3 operator-(const Vec3& A, const Vec3& B)
 	};
 }
 
+Vec3 operator+(const Vec3& A, const Vec3& B)
+{
+	return Vec3{
+		A.x + B.x,
+		A.y + B.y,
+		A.z + B.z
+	};
+}
+
 Matrix4 CreatePerspectiveMatrixClassic(float FovInRadians, float AspectRatio, float Near, float Far)
 {
-	float Scale = 1.f / tan(FovInRadians / 2);
+	float Scale = 1.f / tanf(FovInRadians / 2);
 	float Extent = Far-Near;
 	float Result[] = {
 		Scale/AspectRatio, 0,     0,               0,
@@ -182,12 +242,12 @@ Matrix4 CreatePerspectiveMatrixClassic(float FovInRadians, float AspectRatio, fl
 
 Matrix4 CreatePerspectiveMatrixReverseZ(float FovInRadians, float AspectRatio, float Near)
 {
-	float Scale = 1.f / tan(FovInRadians / 2);
+	float Scale = 1.f / tanf(FovInRadians / 2);
 	float Result[] = {
 		Scale / AspectRatio, 0.0f,  0.0f,  0.0f,
 		0.0f,                Scale, 0.0f,  0.0f,
-		0.0f,                0.0f,  0.0f, -1.0f,
-		0.0f,                0.0f,  Near,  0.0f
+		0.0f,                0.0f,  0.0f,  Near,
+		0.0f,                0.0f,  1.0f,  0.0f
 	};
 	return Matrix4(Result);
 }
@@ -203,6 +263,17 @@ Matrix4 CreateTranslationMatrix(Vec3 Translation)
 	return Matrix4(Result);
 }
 
+Matrix4 InverseAffine(const Matrix4& M)
+{
+	float Result[] = {
+		 M.m00,  M.m10,  M.m20, 0,
+		 M.m01,  M.m11,  M.m21, 0,
+		 M.m02,  M.m12,  M.m22, 0,
+		-M.m30, -M.m31, -M.m32, 1,
+	};
+	return Matrix4(Result);
+}
+
 Matrix4 CreateScaleMatrix(Vec3 Scale)
 {
 	float Result[] = {
@@ -214,6 +285,25 @@ Matrix4 CreateScaleMatrix(Vec3 Scale)
 	return Matrix4(Result);
 }
 
+Matrix4 CreateRotationMatrix(Vec2 YawPitch)
+{
+	float Yaw[] = {
+		cosf(YawPitch.x),  0, sinf(YawPitch.x), 0,
+		0,                 1, 0,                0,
+		-sinf(YawPitch.x), 0, cosf(YawPitch.x), 0,
+		0,                 0, 0,                1,
+	};
+	float Pitch[] = {
+		1, 0,                 0,                0,
+		0, cosf(YawPitch.y), -sinf(YawPitch.y), 0,
+		0, sinf(YawPitch.y),  cosf(YawPitch.y), 0,
+		0, 0,                 0,                1,
+	};
+
+	return Matrix4(Yaw) * Matrix4(Pitch);
+}
+
+#if 0 
 Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 PolarAngles)
 {
 	float cosa = cosf(PolarAngles.x);
@@ -222,84 +312,42 @@ Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 PolarAngles)
 	float sina = sinf(PolarAngles.x);
 	float sinb = sinf(PolarAngles.y);
 	float sinc = sinf(0);
-	float R[] = {
-		cosb*cosc, sina*sinb*cosc-cosa*sinc, cosa*sinb*cosc+sina*sinc, 0,
-		cosb*sinc, sina*sinb*sinc+cosa*cosc, cosa*sinb*sinc-sina*cosc, 0,
-		   -sinb,  sina*cosb,               -cosa*cosb,                1,
-		0,         0,                        0,                        1
+	float Result[] = {
+		cosb*cosc,                cosb*sinc,                -sinb,          0,
+
+		sina*sinb*cosc-cosa*sinc, sina*sinb*sinc+cosa*cosc,  sina*cosb,     0,
+
+		cosa*sinb*cosc+sina*sinc, cosa*sinb*sinc-sina*cosc, -cosa*cosb,     0,
+
+		-Translation.x,          -Translation.y,            -Translation.z, 1
 	};
-	float T[] = {
-		1,0,0,0,
-		0,1,0,0,
-		0,0,1,0,
-		Translation.x, Translation.y, Translation.z, 1,
+	return Matrix4(Result);
+}
+#else
+Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 YawPitch)
+{
+	float Yaw[] = {
+		cosf(-YawPitch.x),  0, sinf(-YawPitch.x), 0,
+		0,                 1, 0,                0,
+		-sinf(-YawPitch.x), 0, cosf(-YawPitch.x), 0,
+		0,                 0, 0,                1,
 	};
-	return Matrix4(T)*Matrix4(R);
-}
+	float Pitch[] = {
+		1, 0,                 0,                0,
+		0, cosf(-YawPitch.y), -sinf(-YawPitch.y), 0,
+		0, sinf(-YawPitch.y),  cosf(-YawPitch.y), 0,
+		0, 0,                 0,                1,
+	};
+	float Translate[] = {
+		1, 0, 0, 0,
+		0, 1, 0, 0,
+		0, 0, 1, 0,
+		-Translation.x, -Translation.y, -Translation.z, 1,
+	};
 
-//Matrix4 CreateViewMatrix(Vec3 Translation, Vec2 YawPitch)
-//{
-//	float Yaw[] = {
-//		cosf(YawPitch.x),  0, sinf(YawPitch.x), 0,
-//		0,                 1, 0,                0,
-//		-sinf(YawPitch.x), 0, cosf(YawPitch.x), 0,
-//		0,                 0, 0,                1,
-//	};
-//	float Pitch[] = {
-//		1, 0,                 0,                0,
-//		0, cosf(YawPitch.y), -sinf(YawPitch.y), 0,
-//		0, sinf(YawPitch.y),  cosf(YawPitch.y), 0,
-//		0, 0,                 0,                1,
-//	};
-//	float Translate[] = {
-//		1, 0, 0, 0,
-//		0, 1, 0, 0,
-//		0, 0, 1, 0,
-//		Translation.x, Translation.y, Translation.z, 1,
-//	};
-//
-//	return Matrix4(Translate) * Matrix4(Yaw) * Matrix4(Pitch);
-//}
-
-float RadiansToDegrees(float Radians)
-{
-	return Radians * (180.0f / (float)M_PI);
+	return Matrix4(Translate) * Matrix4(Yaw) * Matrix4(Pitch);
 }
-
-float DegreesToRadians(float Degrees)
-{
-	return Degrees * ((float)M_PI / 180.0f);
-}
-
-Vec3Pack::Vec3Pack()
-{
-	x = y = z = 0;
-}
-
-Vec3Pack::Vec3Pack(float scalar)
-{
-	x = y = PackFloat11(scalar);
-	z = (x >> 1);
-}
-
-Vec3Pack::Vec3Pack(float* p)
-{
-	x = PackFloat11(p[0]);
-	y = PackFloat11(p[1]);
-	z = PackFloat10(p[2]);
-}
-
-Vec3Pack::Vec3Pack(float xin, float yin, float zin)
-{
-	x = PackFloat11(xin);
-	y = PackFloat11(yin);
-	z = PackFloat10(zin);
-}
-
-Vec3Pack::operator Vec3()
-{
-	return Vec3{ UnpackFloat11(x), UnpackFloat11(y), UnpackFloat10(z) };
-}
+#endif
 
 half::half(float x)
 {
@@ -311,54 +359,10 @@ half::operator float() const
 	return UnpackHalf(Value);
 }
 
-static const uint32_t Max10bit = 0x3ff;
-static const uint32_t Max2bit = 0x3;
-
-Vec4PackUnorm::Vec4PackUnorm()
+u16 RGBto565(float r, float g, float b)
 {
-	x = y = z = w = 0;
-}
-
-Vec4PackUnorm::Vec4PackUnorm(float Xin)
-{
-	CHECK(Xin >= 0.f && Xin <= 1.f, "This format can only hold normalized values");
-
-	x = y = uint32_t(Xin * Max10bit);
-	z = uint32_t(Xin * Max10bit);
-	w = 0;
-}
-
-Vec4PackUnorm::Vec4PackUnorm(float* p)
-{
-	CHECK(p[0] >= 0.f && p[0] <= 1.f, "This format can only hold normalized values");
-	CHECK(p[1] >= 0.f && p[1] <= 1.f, "This format can only hold normalized values");
-	CHECK(p[2] >= 0.f && p[2] <= 1.f, "This format can only hold normalized values");
-	CHECK(p[3] >= 0.f && p[3] <= 1.f, "This format can only hold normalized values");
-
-	x = uint32_t(p[0] * Max10bit);
-	y = uint32_t(p[1] * Max10bit);
-	z = uint32_t(p[2] * Max10bit);
-	w = uint32_t(p[3] * Max2bit);
-}
-
-Vec4PackUnorm::Vec4PackUnorm(float Xin, float Yin, float Zin, float Win)
-{
-	CHECK(Xin >= 0.f && Xin <= 1.f, "This format can only hold normalized values");
-	CHECK(Yin >= 0.f && Yin <= 1.f, "This format can only hold normalized values");
-	CHECK(Zin >= 0.f && Zin <= 1.f, "This format can only hold normalized values");
-
-	x = uint32_t(Xin * Max10bit);
-	y = uint32_t(Yin * Max10bit);
-	z = uint32_t(Zin * Max10bit);
-	w = uint32_t(Win * Max2bit);
-}
-
-Matrix4Half::Matrix4Half(const Matrix4& Matrix)
-{
-	half* pThis = &m00;
-	const float* pMatrix = &Matrix.m00;
-	for (int i = 0; i < 16; ++i)
-	{
-		*pThis++ = half(*pMatrix++);
-	}
+	u16 Result = u16(Clamp<float>(r * (float)Max5bit, 0, Max5bit)) & Max5bit;
+	Result |= (u16(Clamp<float>(g * (float)Max5bit, 0, Max6bit)) & Max6bit) << 5;
+	Result |= (u16(Clamp<float>(b * (float)Max5bit, 0, Max5bit)) & Max5bit) << 11;
+	return Result;
 }

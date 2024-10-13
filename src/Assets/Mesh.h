@@ -1,31 +1,23 @@
 #pragma once
 #include "Common.h"
-#include "Containers/Array.h"
-#include "Containers/String.h"
+#include "Util/Math.generated.h"
 
-struct VertexStreamDescription
-{
-	String SemanticName;
-	u8     SemanticIndex;
-	u8     Format;
-	u8     InputSlot;
-	u8     ByteOffset;
+enum MeshFlags : u8 {
+	PositionPacked   = 1 << 0,
+	HasNormals       = 1 << 1,
+	HasVertexColor   = 1 << 2,
+	HasUV0           = 1 << 3,
+	GUI              = 1 << 4,
 };
 
 struct MeshDescription
 {
-	enum Flags : u8 {
-		Indeces16Bit   = 1 << 0,
-		PositionPacked = 1 << 1,
-	};
-	TArray<VertexStreamDescription> VertexDeclaration;
-	u32 VertexBufferSize;
-	u32 IndexBufferSize;
-	u8  VertexSize;
-	u8  Flags;
+	Vec3 BoxMin;
+	Vec3 BoxMax;
+
+	u32 VertexCount{};
+	u32 IndexCount{};
+	u32 MaterialIndex{};
+	u8 VertexSize{};
+	u8 Flags{};
 };
-
-MeshDescription ExtractMeshDescription(struct aiMesh* Mesh);
-
-void UploadMeshData(u8* CpuPtr, aiMesh* Mesh, bool PositionPacked);
-void UploadIndexData(u8* CpuPtr, aiMesh* Mesh);

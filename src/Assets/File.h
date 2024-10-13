@@ -1,12 +1,24 @@
 #pragma once
-#include "Containers/String.h"
+
+#include <EASTL/string.h>
+
+#include "Containers/StringView.h"
 #include "Common.h"
 
 #define COMPRESSED_MAX_SIZE(x) (x + x / 16 + 64 + 3)
 
-using FileData = String;
 
-FileData LoadWholeFile(StringView Path);
+template<typename T>
+RawDataView ContainerToView(const T& Container)
+{
+	u64 Size = Container.size() * sizeof(*Container.begin());
+	return RawDataView((const u8*)Container.data(), Size);
+}
 
-u64 Compress(u8* Src, u64 SrcLen, u8* Dst, u64 DstLen);
-u64 Decompress(u8* Src, u64 SrcLen, u8* Dst, u64 DstLen);
+struct FileMapping
+{
+	void* File;
+	void* Mapping;
+	void* BasePtr;
+	u64   FileSize;
+};

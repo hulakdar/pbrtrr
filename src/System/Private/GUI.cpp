@@ -1,8 +1,7 @@
-#include "System/Window.h"
 #include "System/GUI.h"
 #include "Render/Texture.h"
 #include "Render/RenderThread.h"
-#include "Render/Context.h"
+#include "Render/RenderDX12.h"
 
 #include <imgui.h>
 #include <imnodes.h>
@@ -36,6 +35,7 @@ void InitGUI(const System::Window& WindowHandle)
 	ImGui::CreateContext();
 	ImNodes::CreateContext();
 	ImNodes::GetIO().AltMouseButton = ImGuiMouseButton_Right;
+	ImNodes::GetStyle().Flags = ImNodesStyleFlags_NodeOutline;
 
 	ImGui::SetAllocatorFunctions(&Allocate, Deallocate);
 
@@ -43,19 +43,23 @@ void InitGUI(const System::Window& WindowHandle)
 
 	ImGuiIO& io = ImGui::GetIO();
 	io.DisplaySize = ImVec2((float)WindowHandle.mSize.x, (float)WindowHandle.mSize.y);
+	io.Fonts->AddFontFromFileTTF("content/fonts/Roboto.ttf", 20);
+	io.Fonts->Build();
 
 	EnqueueToRenderThread([]() {
 		ImGuiIO& io = ImGui::GetIO();
-		io.Fonts->AddFontFromFileTTF("content/fonts/Roboto.ttf", 20);
 		uint8_t* Data = nullptr;
-		int w = 0, h = 0;
-		io.Fonts->GetTexDataAsAlpha8(&Data, &w, &h);
+		int w = 0, h = 0, bytes = 0;
+		io.Fonts->GetTexDataAsAlpha8(&Data, &w, &h, &bytes);
 		gFontTexData.Width = (u16)w;
 		gFontTexData.Height = (u16)h;
 		gFontTexData.Format = DXGI_FORMAT_R8_UNORM;
-		CreateResourceForTexture(gFontTexData, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON);
+		gFontTexData.NumMips = 1;
+		CreateResourceForTexture(gFontTexData, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON, nullptr);
 		UploadTextureData(gFontTexData, Data, w*h*4);
-		CreateSRV(gFontTexData);
+		CreateSRV(gFontTexData, true);
+		ImGuiTexIDWrapper Wrapper = ImGuiTexIDWrapper(gFontTexData.SRV, 0, true);
+		io.Fonts->SetTexID(Wrapper);
 	});
 
 	io.IniFilename = NULL;

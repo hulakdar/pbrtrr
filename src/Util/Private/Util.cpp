@@ -1,4 +1,3 @@
-#include <Tracy.hpp>
 #include <stdint.h>
 
 #include "Threading/Mutex.h"
@@ -6,9 +5,10 @@
 #include "Util/Util.h"
 #include "Util/Debug.h"
 #include "Util/Math.h"
-#include "Common.h"
+#include "System/Win32.h"
 
-#ifdef DEBUG
+
+#if DEBUG
 
 #define PageSize 4096U
 #define SentinelExpectedValue 0xdeadbeefdeadbeef
@@ -21,7 +21,7 @@ struct AllocationData
 	u64	Sentinel;
 };
 
-void* StompMalloc(u64 Size, u32 Alignment)
+void* StompMalloc(u64 Size, u64 Alignment)
 {
 	if(Size == 0U)
 		return nullptr;
@@ -87,7 +87,7 @@ void* operator new[](size_t size, size_t alignment, size_t, const char*, int, un
 
 void* operator new(std::size_t size, std::align_val_t align)
 {
-	void* ptr = StompMalloc(size, (u32)align);
+	void* ptr = StompMalloc(size, (u64)align);
 	TracyAlloc(ptr, size);
 	return ptr;
 }

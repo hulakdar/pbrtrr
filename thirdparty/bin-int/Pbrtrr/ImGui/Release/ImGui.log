@@ -1,9 +1,0 @@
-﻿  imgui.cpp
-  imgui_draw.cpp
-  imgui_tables.cpp
-  imgui_widgets.cpp
-  imnodes.cpp
-C:\dev\pbrtrr\thirdparty\imnodes\imnodes.cpp(3017,9): warning C4996: 'sscanf': This function or variable may be unsafe. Consider using sscanf_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
-C:\dev\pbrtrr\thirdparty\imnodes\imnodes.cpp(3024,14): warning C4996: 'sscanf': This function or variable may be unsafe. Consider using sscanf_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
-C:\dev\pbrtrr\thirdparty\imnodes\imnodes.cpp(3033,11): warning C4996: 'sscanf': This function or variable may be unsafe. Consider using sscanf_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
-  ImGui.vcxproj -> C:\dev\pbrtrr\thirdparty\bin\Pbrtrr\ImGui\ImGui.lib

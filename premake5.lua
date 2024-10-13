@@ -33,7 +33,7 @@ filter "configurations:Release"
     defines { "NDEBUG", "RELEASE" }
     flags { "LinkTimeOptimization" }
     optimize "On"
-    
+
 filter ""
 
 include ("thirdparty/premake5.lua")
@@ -50,36 +50,40 @@ end
     language "C++"
     staticruntime "Off"
     stringpooling "on"
-	cppdialect "C++17"
+	cppdialect "C++20"
     location "."
     warnings "Extra"
     objdir "./bin-int"
     targetdir ("./bin")
 
-if _ACTION == "vs2017" then
-    libdirs {"./thirdparty/glfw/lib-vc2017"}
-elseif _ACTION == "vs2019" then
-    libdirs {"./thirdparty/glfw/lib-vc2019"}
-else
+	prebuildcommands { "GenerateProjects.bat" }
+
     libdirs {"./thirdparty/glfw/lib-vc2022"}
     postbuildcommands {
         "copy thirdparty\\glfw\\lib-vc2022\\glfw3.dll bin",
     }
-end
+
     postbuildcommands {
-        "copy thirdparty\\assimp\\bin\\Release\\assimp-vc142-mt.dll bin",
+        "copy thirdparty\\directstorage\\native\\bin\\x64\\dstorage.dll bin",
+        "copy thirdparty\\directstorage\\native\\bin\\x64\\dstoragecore.dll bin",
+    }
+
+    postbuildcommands {
         "copy thirdparty\\winpixeventruntime\\bin\\x64\\WinPixEventRuntime.dll bin",
+        "copy thirdparty\\dxc\\bin\\x64\\dxil.dll bin",
+        "copy thirdparty\\dxc\\bin\\x64\\dxcompiler.dll bin",
     }
     
     libdirs {
         -- thirdparty
-        "./thirdparty/assimp",
-        "./thirdparty/irrXML",
         "./thirdparty/EASTL",
+        "./thirdparty/dxc/lib/x64",
         "./thirdparty/winpixeventruntime/bin/x64",
+        "./thirdparty/directstorage/native/lib/x64",
     }
 
     files {
+        "./thirdparty/minilzo/minilzo.c",
         "./thirdparty/imgui/backends/imgui_impl_glfw.cpp",
         "./thirdparty/imgui/backends/imgui_impl_glfw.h",
         "./thirdparty/tracy/public/TracyClient.cpp",
@@ -89,15 +93,17 @@ end
 
     links {
         -- d3d
-        "d3dcompiler",
         "dxguid",
         "d3d12",
         "dxgi",
+        "dstorage",
         -- windows
         "Winmm",
+        "onecore",
+        "dxcompiler",
         -- thirdparty
+        "CityHash",
         "imgui",
-        "irrxml",
         "glfw3",
         "WinPixEventRuntime",
     }
@@ -105,16 +111,19 @@ end
     includedirs {   
         "./src/",
         "./thirdparty/glfw/include",
+        "./thirdparty/minilzo",
         "./thirdparty/imgui",
         "./thirdparty/imnodes",
+        "./thirdparty/CityHash/src",
         "./thirdparty/tracy/public/tracy",
-        "./thirdparty/assimp/include",
-        "./thirdparty/irrXML/include",
+        "./thirdparty/tracy/public/client",
         "./thirdparty/EASTL/include",
         "./thirdparty/winpixeventruntime/include",
+        "./thirdparty/directstorage/native/include",
     }
 
     defines {
+        "EASTL_CUSTOM_FLOAT_CONSTANTS_REQUIRED",
         "_CRT_SECURE_NO_WARNINGS",
         "WIN32_LEAN_AND_MEAN",
         "NOMINMAX",
@@ -131,7 +140,6 @@ end
         }
         links {
             "EASTLd",
-            "assimp-vc142-mt",
         }
 
     filter "Profile"
@@ -142,7 +150,6 @@ end
         }
         links {
             "EASTL",
-            "assimp-vc142-mt",
         }
     
     filter "Development"
@@ -152,15 +159,12 @@ end
         }
         links {
             "EASTL",
-            "assimp-vc142-mt",
         }
-
 
     filter "Release"
         runtime "Release"
         links {
             "EASTL",
-            "assimp-vc142-mt",
         }
 
     --[[ This stuff is just for reference, it doesn't really work that well
@@ -186,3 +190,117 @@ end
         shadertype("Vertex")
         
     ]]--
+
+project "Oven"
+    kind "ConsoleApp"
+    vectorextensions "AVX2"
+    floatingpoint "Fast"
+    language "C++"
+    staticruntime "Off"
+    stringpooling "on"
+	cppdialect "C++20"
+    location "."
+    warnings "Extra"
+    objdir "./bin-int"
+    targetdir ("./bin")
+
+    postbuildcommands {
+        "copy thirdparty\\assimp\\bin\\Release\\assimp-vc142-mt.dll bin",
+        "copy thirdparty\\directstorage\\native\\bin\\x64\\dstorage.dll bin",
+        "copy thirdparty\\directstorage\\native\\bin\\x64\\dstoragecore.dll bin",
+    }
+
+	prebuildcommands { "GenerateProjects.bat" }
+
+    libdirs {
+        -- thirdparty
+        "./thirdparty/assimp",
+        "./thirdparty/irrXML",
+        "./thirdparty/EASTL",
+        "./thirdparty/dxc/lib/x64",
+        "./thirdparty/winpixeventruntime/bin/x64",
+        "./thirdparty/directstorage/native/lib/x64",
+    }
+
+    files {
+        "./thirdparty/tracy/public/TracyClient.cpp",
+        "./thirdparty/minilzo/minilzo.c",
+        "./thirdparty/EASTL/EASTL.natvis",
+        "./Oven/**.h", "./Oven/**.cpp",
+        "./src/Util/**.h", "./src/Util/**.cpp",
+        "./src/Containers/**.h", "./src/Containers/**.cpp",
+        "./src/Assets/**.h", "./src/Assets/**.cpp",
+        "./src/Threading/**.h", "./src/Threading/**.cpp",
+        "./src/external/Implementations.cpp",
+     }
+
+    links {
+        -- d3d
+        "dxcompiler",
+        "dstorage",
+        -- windows
+        "Winmm",
+        "onecore",
+        -- thirdparty
+        "irrxml",
+        "CityHash",
+        "meshoptimizer",
+    }
+
+    includedirs {   
+        "./src/",
+        "./thirdparty/glfw/include",
+        "./thirdparty/minilzo",
+        "./thirdparty/tracy/public/tracy",
+        "./thirdparty/tracy/public/client",
+        "./thirdparty/assimp/include",
+        "./thirdparty/irrXML/include",
+        "./thirdparty/EASTL/include",
+        "./thirdparty/cityhash/src",
+        "./thirdparty/cityhashconfig",
+        "./thirdparty/directstorage/native/include",
+        "./thirdparty/meshoptimizer/src",
+    }
+
+    defines {
+        "EASTL_CUSTOM_FLOAT_CONSTANTS_REQUIRED",
+        "_CRT_SECURE_NO_WARNINGS",
+        "WIN32_LEAN_AND_MEAN",
+        "NOMINMAX",
+        "WIN32",
+        "_WINDOWS",
+        "OVEN",
+    }
+
+    filter "Debug"
+        defines {
+            "EA_DEBUG",
+        }
+        links {
+            "EASTLd",
+            "assimp-vc142-mt",
+        }
+
+    filter "Profile"
+        runtime "Release"
+        defines {
+            "TRACY_ENABLE",
+        }
+        links {
+            "EASTL",
+            "assimp-vc142-mt",
+        }
+    
+    filter "Development"
+        runtime "Release"
+        links {
+            "EASTL",
+            "assimp-vc142-mt",
+        }
+
+    filter "Release"
+        runtime "Release"
+        links {
+            "EASTL",
+            "assimp-vc142-mt",
+        }

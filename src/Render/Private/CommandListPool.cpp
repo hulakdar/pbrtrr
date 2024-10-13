@@ -1,23 +1,16 @@
-#include "Render/CommandListPool.h"
-#include "Render/CommandAllocatorPool.h"
-#include "Render/Context.h"
+#include "Render/CommandListPool.generated.h"
+#include "Render/RenderDX12.h"
 #include "Containers/Map.h"
 #include "Containers/Queue.h"
 #include "Containers/ComPtr.h"
 #include "Threading/Mutex.h"
 #include "Util/Util.h"
+#include "Util/Debug.h"
 
 #include <d3d12.h>
 
-TQueue<ComPtr<ID3D12GraphicsCommandList>> gCommandLists[4];
-TracyLockable(Mutex, gCommandListLock);
-//Mutex gCommandListLock;
-
-std::atomic<u64> gListsInFlight = 0;
-
-//TracyLockable(Mutex, gDebugMapLock);
-Mutex gDebugMapLock;
-TMap<ID3D12GraphicsCommandList*, const wchar_t*> gDebugMap;
+static TQueue<TComPtr<ID3D12GraphicsCommandList7>> gCommandLists[4];
+static TracyLockable(Mutex, gCommandListLock);
 
 D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, const wchar_t *DebugName)
 {
@@ -42,21 +35,11 @@ D3D12CmdList GetCommandList(D3D12_COMMAND_LIST_TYPE Type, const wchar_t *DebugNa
 	VALIDATE(Result.CommandList->Reset(Result.CommandAllocator.Get(), nullptr));
 	Result.CommandList->SetName(DebugName);
 
-	gDebugMapLock.lock();
-	gDebugMap[Result.CommandList.Get()] = DebugName;
-	gDebugMapLock.unlock();
-
-	gListsInFlight++;
 	return Result;
 }
 
 void DiscardCommandList(D3D12CmdList& CmdList)
 {
-	gDebugMapLock.lock();
-	gDebugMap.erase(CmdList.CommandList.Get());
-	gDebugMapLock.unlock();
-
-	gListsInFlight--;
 	DiscardCommandAllocator(CmdList.CommandAllocator, CmdList.Type);
 
 	ScopedLock AutoLock(gCommandListLock);

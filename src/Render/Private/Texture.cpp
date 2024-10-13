@@ -1,4 +1,3 @@
-#include "Render/RenderDebug.h"
 #include "Render/Texture.h"
 #include "Containers/ComPtr.h"
 #include "Containers/String.h"
@@ -12,13 +11,13 @@
 
 struct TextureDataInternal
 {
-	ComPtr<ID3D12Resource> Resource;
+	TComPtr<ID3D12Resource> Resource;
 	String Name;
 };
 
-TracySharedLockable(RWLock, gTextureMutex);
-TArray<TextureDataInternal> gTextures = { TextureDataInternal{nullptr,""}};
-TArray<bool>                gTexturesValid = { false };
+static TracySharedLockable(RWLock, gTextureMutex);
+static TArray<TextureDataInternal> gTextures = { TextureDataInternal{nullptr,""}};
+static TArray<bool>                gTexturesValid = { false };
 
 inline TextureDataInternal& GetTexData(TexID Id)
 {
@@ -69,4 +68,3 @@ const char* GetTextureName(TexID Id)
 	ReadLock AutoLock(gTextureMutex);
 	return GetTexData(Id).Name.c_str();
 }
-

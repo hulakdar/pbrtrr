@@ -1,21 +1,16 @@
 #pragma once
-#include <stdint.h>
+#include "Common.h"
 
 namespace System
 {
 	class Window;
 }
-namespace Microsoft
-{
-	namespace WRL
-	{
-		template <typename T>
-		class ComPtr;
-	}
-}
 
 template <typename T>
-using ComPtr = Microsoft::WRL::ComPtr<T>;
+struct TComPtr;
+
+#pragma warning (push)
+#pragma warning (disable : 4471)
 
 enum DXGI_FORMAT;
 enum DXGI_SWAP_CHAIN_FLAG;
@@ -43,8 +38,10 @@ struct ID3D12CommandQueue;
 struct ID3D12PipelineState;
 struct ID3D12CommandAllocator;
 struct ID3D12GraphicsCommandList;
+struct ID3D12GraphicsCommandList7;
 struct ID3D12RootSignature;
+struct IDStorageFile;
 
-struct TextureData;
-struct D3D12CmdList;
-enum   BufferType;
+typedef u64 D3D12_GPU_VIRTUAL_ADDRESS;
+
+#pragma warning (pop)

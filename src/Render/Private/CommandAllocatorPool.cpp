@@ -1,5 +1,6 @@
-#include "Render/CommandAllocatorPool.h"
-#include "Render/Context.h"
+#include <d3d12.h>
+
+#include "Render/RenderDX12.h"
 #include "Render/RenderThread.h"
 #include "Containers/Queue.h"
 #include "Containers/ComPtr.h"
@@ -7,15 +8,12 @@
 #include "Threading/Mutex.h"
 #include "Util/Util.h"
 
-#include <d3d12.h>
+static TQueue<TComPtr<ID3D12CommandAllocator>> gInFlightAllocators[4];
+static TracyLockable(Mutex, gFreeAllocatorsLock);
 
-TQueue<ComPtr<ID3D12CommandAllocator>> gInFlightAllocators[4];
-TracyLockable(Mutex, gFreeAllocatorsLock);
-//Mutex gFreeAllocatorsLock;
-
-ComPtr<ID3D12CommandAllocator> GetCommandAllocator(D3D12_COMMAND_LIST_TYPE Type)
+TComPtr<ID3D12CommandAllocator> GetCommandAllocator(D3D12_COMMAND_LIST_TYPE Type)
 {
-	ComPtr<ID3D12CommandAllocator> Result;
+	TComPtr<ID3D12CommandAllocator> Result;
 	{
 		ScopedLock AutoLock(gFreeAllocatorsLock);
 		if (!gInFlightAllocators[Type].empty())
@@ -29,7 +27,7 @@ ComPtr<ID3D12CommandAllocator> GetCommandAllocator(D3D12_COMMAND_LIST_TYPE Type)
 	return Result;
 }
 
-void DiscardCommandAllocator(ComPtr<ID3D12CommandAllocator>& Allocator, D3D12_COMMAND_LIST_TYPE Type)
+void DiscardCommandAllocator(TComPtr<ID3D12CommandAllocator>& Allocator, D3D12_COMMAND_LIST_TYPE Type)
 {
 	ScopedLock AutoLock(gFreeAllocatorsLock);
 	EnqueueDelayedWork([Type, Allocator = MOVE(Allocator)]() mutable {
