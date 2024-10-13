@@ -1,0 +1,34 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "${workspaceFolder}/generated",
+                "${workspaceFolder}/thirdparty/tracy/public",
+                "${workspaceFolder}/thirdparty/external",
+                "${workspaceFolder}/thirdparty/EASTL/include",
+                "${workspaceFolder}/thirdparty/directstorage/native/include",
+                "${workspaceFolder}/thirdparty/imgui",
+                "${workspaceFolder}/thirdparty/winpixeventruntime/Include",
+                "${workspaceFolder}/thirdparty/glfw/include",
+                "${workspaceFolder}/thirdparty/imnodes",
+                "${workspaceFolder}/thirdparty/assimp/include",
+                "${workspaceFolder}/generated"
+            ],
+            "defines": [
+                "_DEBUG",
+                "DEBUG",
+                "TRACY_ENABLE",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "windowsSdkVersion": "10.0.22621.0",
+            "compilerPath": "cl.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-msvc-x64"
+        }
+    ],
+    "version": 4
+}

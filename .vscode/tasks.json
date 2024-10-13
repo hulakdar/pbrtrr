@@ -1,0 +1,38 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build-code-generator",
+            "command": "cmd.exe",
+            "args": [
+                "/c",
+                "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
+                "&&",
+                "build.bat",
+                "OnlyCodeParser",
+            ],
+            "options": { "cwd": "${workspaceRoot}" },
+            "type": "process",
+            "problemMatcher": [ "$msCompile" ],
+        },
+        {
+            "label": "build",
+            "command": "cmd.exe",
+            "args": [
+                "/c",
+                "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Auxiliary\\Build\\vcvars64.bat",
+                "&&",
+                "build.bat",
+            ],
+            "options": { "cwd": "${workspaceRoot}" },
+            "type": "process",
+            "problemMatcher": [ "$msCompile" ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}

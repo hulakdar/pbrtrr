@@ -13,7 +13,6 @@
 
 # Visual Studio junk
 .vs/
-.vscode/
 *.vcxproj
 *.vcxproj.*
 *.sln
