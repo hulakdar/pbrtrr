@@ -1512,7 +1512,7 @@ int main(void)
 		}
 
 #define CHECK_SCREENSHOT_CODE 0
-#if CHECK_SCREENSHOT_CODE //|| TRACY_ENABLE // Send screenshot to Tracy
+#if CHECK_SCREENSHOT_CODE || TRACY_ENABLE // Send screenshot to Tracy
 		if (CHECK_SCREENSHOT_CODE || TracyIsConnected)
 		{
 			static bool ScreenShotInFlight = false;
@@ -1540,7 +1540,8 @@ int main(void)
 							Small.Format = READBACK_FORMAT;
 							Small.Width  = (u16)Window.mSize.x;
 							Small.Height = (u16)Window.mSize.y;
-							while (Small.Width * Small.Height * 4 > 256kb)
+							Small.NumMips = 1;
+							while (Small.Width * Small.Height * 4 > 256_kb)
 							{
 								Small.Width  >>= 1;
 								Small.Height >>= 1;

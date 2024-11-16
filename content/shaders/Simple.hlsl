@@ -21,7 +21,7 @@ VertexShaderOutput MainVS(
 {
 	VertexShaderOutput output;
 
-	output.Position = mul(PushConstants.MVP, position);
+	output.Position = mul(MVP, position);
 	output.UV = uv;
 
 	return output;
@@ -36,21 +36,21 @@ SamplerState BilinearSampler : register(s1);
 
 half4 MainPS(VertexShaderOutput In) : SV_TARGET
 {
-	float l = SRVs[PushConstants.diffuseTextureIndex].CalculateLevelOfDetail(BilinearSampler, In.UV);
+	float l = SRVs[diffuseTextureIndex].CalculateLevelOfDetail(BilinearSampler, In.UV);
 
 	l = clamp(l, 0, 16);
 	uint CrossLaneMin = WaveActiveMin(l) * 1024.f;
 	if (WaveIsFirstLane())
 	{
-		InterlockedMin(SamplerFeedback[PushConstants.diffuseTextureIndex], CrossLaneMin);
+		InterlockedMin(SamplerFeedback[diffuseTextureIndex], CrossLaneMin);
 	}
 
-	half4 Color = SRVs[PushConstants.diffuseTextureIndex].Sample(BilinearSampler, In.UV, int2(0,0), PushConstants.lodClampIndex);
+	half4 Color = SRVs[diffuseTextureIndex].Sample(BilinearSampler, In.UV, int2(0,0), lodClampIndex);
 	clip(Color.a - 0.5);
 
-	if (all(uint2(In.Position.xy) == uint2(PushConstants.mouseX, PushConstants.mouseY)))
+	if (all(uint2(In.Position.xy) == uint2(mouseX, mouseY)))
 	{
-		uint DepthAndIndex = PushConstants.diffuseTextureIndex;
+		uint DepthAndIndex = diffuseTextureIndex;
 		DepthAndIndex |= uint(In.Position.z * 65535.f) << 16;
 		InterlockedMax(Picking[0], DepthAndIndex);
 	}

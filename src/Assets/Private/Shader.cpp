@@ -146,4 +146,5 @@ TComPtr<ID3D12ShaderReflection> GetReflection(IDxcBlob* Shader)
 
 	TComPtr<ID3D12ShaderReflection> Result;
 	gDxcUtils->CreateReflection(&ShaderBuffer, IID_PPV_ARGS(&Result));
+	return Result;
 }

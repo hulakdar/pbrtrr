@@ -215,6 +215,7 @@ void DiscardTransientTexture(TextureData& TexData)
 	Desc.Height = TexData.Height;
 	Desc.Format = (u8)GetTypelessFormat((DXGI_FORMAT)TexData.Format);
 	Desc.Flags =  TexData.Flags;
+	Desc.NumMips = TexData.NumMips;
 	TArray<TexID>& CompatibleResources = gFreeTextures[Desc.Hash()];
 	CompatibleResources.push_back(TexData.ID);
 }
