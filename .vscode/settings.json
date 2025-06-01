@@ -92,6 +92,7 @@
         "xutility": "cpp",
         "minilzo.c": "cpp",
         "semaphore": "cpp",
-        "codecvt": "cpp"
+        "codecvt": "cpp",
+        "nob.h": "c"
     }
 }

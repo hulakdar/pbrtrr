@@ -193,9 +193,7 @@ void FinalizePak(PakFileWriter& Pak)
 			u32 Offset1, Size1, Offset2, Size2;
 			UnpackName(Pak.Items[i].second.FileNameOffsetAndSize, Offset1, Size1);
 			UnpackName(Pak.Items[i + 1].second.FileNameOffsetAndSize, Offset2, Size2);
-			StringView Name1((char*) & Pak.ExtraData[Offset1], Size1);
-			StringView Name2((char*) & Pak.ExtraData[Offset2], Size2);
-			//CHECK(Name1 == Name2);
+			CHECK(Size1 == Size2 && memcmp(&Pak.ExtraData[Offset1], &Pak.ExtraData[Offset2], Size1) == 0);
 		}
 	}
 

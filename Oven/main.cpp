@@ -8,6 +8,7 @@
 #include <dxcapi.h>
 #include <stb/stb_sprintf.h>
 #include <d3d12.h>
+#include <d3d12shader.h>
 
 #include <EASTL/bitset.h>
 
@@ -29,8 +30,6 @@
 
 #include "Threading/Worker.h"
 
-#include "Util/TypeInfo.h"
-#include <d3d12shader.h>
 
 void MaterialSetTextureType(MaterialDescription& Material, aiTextureType TextureType, u16 Index)
 {
@@ -947,71 +946,57 @@ int main(int Argc, const char* Argv[])
 					}
 				}
 
-				TComPtr<IDxcBlob> CS = CompileShader(FilePath, "MainCS");
-				TComPtr<IDxcBlob> VS = CompileShader(FilePath, "MainVS");
-				TComPtr<IDxcBlob> PS = CompileShader(FilePath, "MainPS");
-				if (CS)
-				{
-					TComPtr<ID3D12ShaderReflection> Reflection = GetReflection(CS);
-					UINT TGSx, TGSy, TGSz;
-					Reflection->GetThreadGroupSize(&TGSx, &TGSy, &TGSz);
-
-					D3D12_SHADER_DESC Desc;
-					Reflection->GetDesc(&Desc);
-					for (UINT i = 0; i < Desc.ConstantBuffers; ++i)
-					{
-						ID3D12ShaderReflectionConstantBuffer* ConstBuffer = Reflection->GetConstantBufferByIndex(i);
-
-						D3D12_SHADER_BUFFER_DESC BufferDesc;
-						ConstBuffer->GetDesc(&BufferDesc);
-					}
-					for (UINT i = 0; i < Desc.BoundResources; ++i)
-					{
-						D3D12_SHADER_INPUT_BIND_DESC BindDesc;
-						Reflection->GetResourceBindingDesc(i, &BindDesc);
-					}
-				}
-
 				StringView Name = FilePath;
 				Name.remove_prefix(Name.find_last_of("\\/") + 1);
 				Name.remove_suffix(5); // ".hlsl"
-				CHECK(CS || VS || PS);
-				CHECK(!VS == !PS);
 
-				u64 BufferSize = 0;
-				if (CS) BufferSize += CS->GetBufferSize();
-				if (VS) BufferSize += VS->GetBufferSize();
-				if (PS) BufferSize += PS->GetBufferSize();
-
-				String Data(BufferSize, 0);
-
-				if (VS) CHECK(VS->GetBufferSize() <= INT16_MAX);
-				if (PS) CHECK(PS->GetBufferSize() <= UINT16_MAX);
-
-				u32 PrivateFlags = CS ? 1 << 31 : 0;
-
-				if (VS) PrivateFlags |= (VS->GetBufferSize() << 16) | PS->GetBufferSize();
-
-				u8* Ptr = (u8*)Data.data();
+				TComPtr<ID3D12ShaderReflection> CSReflection;
+				TComPtr<IDxcBlob> CS = CompileShader(FilePath, "MainCS", CSReflection.GetAddressOf());
 				if (CS)
 				{
-					memcpy(Ptr, CS->GetBufferPointer(), CS->GetBufferSize());
-					Ptr += CS->GetBufferSize();
+					InsertIntoPak(ShadersPak, Name, RawDataView((u8*)CS->GetBufferPointer(), CS->GetBufferSize()), 1 << 31);
 				}
-				if (VS)
+				else
 				{
-					memcpy(Ptr, VS->GetBufferPointer(), VS->GetBufferSize());
-					Ptr += VS->GetBufferSize();
-				}
-				if (PS)
-				{
-					memcpy(Ptr, PS->GetBufferPointer(), PS->GetBufferSize());
-					Ptr += PS->GetBufferSize();
-				}
+					TComPtr<ID3D12ShaderReflection> Reflections[2];
+					TComPtr<IDxcBlob> VS = CompileShader(FilePath, "MainVS", Reflections[0].GetAddressOf());
+					TComPtr<IDxcBlob> PS = CompileShader(FilePath, "MainPS", Reflections[1].GetAddressOf());
 
-				//CHECK(Ptr == (u8*)Data.end());
+					CHECK(VS && PS);
+					CHECK(VS->GetBufferSize() <= INT16_MAX);
+					CHECK(PS->GetBufferSize() <= UINT16_MAX);
 
-				InsertIntoPak(ShadersPak, Name, Data, PrivateFlags);
+					ShaderReflectionData ReflectionData{};
+
+					for (int i = 0; i < 2; ++i)
+					{
+						ID3D12ShaderReflection *R = Reflections[i].Get();
+
+						D3D12_SHADER_DESC Desc;
+						R->GetDesc(&Desc);
+
+						ReflectionData.NumCBVs = Desc.ConstantBuffers;
+						for (int j = 0; j < Desc.BoundResources; ++j)
+						{
+							D3D12_SHADER_INPUT_BIND_DESC ResourceDesc;
+							R->GetResourceBindingDesc(j, &ResourceDesc);
+
+							if (ResourceDesc.Type == D3D_SIT_CBUFFER)
+							{
+								D3D12_SHADER_BUFFER_DESC CBDesc{};
+								ID3D12ShaderReflectionConstantBuffer* CB = R->GetConstantBufferByIndex(ResourceDesc.BindPoint);
+								CB->GetDesc(&CBDesc);
+							}
+						}
+					}
+
+					String Data(VS->GetBufferSize() + PS->GetBufferSize(), 0);
+
+					memcpy((u8*)Data.data(), VS->GetBufferPointer(), VS->GetBufferSize());
+					memcpy((u8*)Data.data() + VS->GetBufferSize(), PS->GetBufferPointer(), PS->GetBufferSize());
+
+					InsertIntoPak(ShadersPak, Name, Data, (VS->GetBufferSize() << 16) | PS->GetBufferSize());
+				}
 			}
 		}
 		FinalizePak(ShadersPak);

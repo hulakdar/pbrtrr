@@ -26,6 +26,7 @@
             "cwd": "${workspaceRoot}",
             "program": "${workspaceRoot}/bin/Oven.exe",
             "visualizerFile": "${workspaceFolder}/thirdparty/EASTL/EASTL.natvis",
+            "args": ["compile_shaders"]
         },
         {
             "preLaunchTask": "build-code-generator",

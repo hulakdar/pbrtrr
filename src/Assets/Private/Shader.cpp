@@ -5,7 +5,7 @@
 #include <d3d12shader.h>
 
 static TComPtr<IDxcUtils>    gDxcUtils;
-static TComPtr<IDxcCompiler2> gDxcCompiler;
+static TComPtr<IDxcCompiler3> gDxcCompiler;
 static TComPtr<IDxcIncludeHandler> gIncludeHandler;
 
 namespace
@@ -65,7 +65,7 @@ ShaderType GetShaderTypeFromEntryPoint(StringView EntryPoint)
 	return eShaderTypeCount;
 }
 
-TComPtr<IDxcBlob> CompileShader(StringView FileName, StringView EntryPoint)
+TComPtr<IDxcBlob> CompileShader(StringView FileName, StringView EntryPoint, ID3D12ShaderReflection** Reflection)
 {
 	ShaderType Type = GetShaderTypeFromEntryPoint(EntryPoint);
 	StringView TargetType = GetTargetVersionFromType(Type);
@@ -86,25 +86,29 @@ TComPtr<IDxcBlob> CompileShader(StringView FileName, StringView EntryPoint)
 		return {nullptr};
 	}
 
-	TComPtr<IDxcBlobEncoding> pSource;
-	gDxcUtils->CreateBlobFromPinned(Shader.data(), (u32)Shader.size(), CP_UTF8, &pSource);
+	DxcBuffer Source{};
+	Source.Ptr = Shader.data();
+	Source.Size = Shader.size();
 
 	WString File = ToWide(String(FileName));
 	WString Entry = ToWide(String(EntryPoint));
 
 	PCWSTR Arguments[] = {
+		File.c_str(),
+		L"-T", Target.c_str(),
+		L"-E", Entry.c_str(),
 		L"-Zi",
 		L"-Qembed_debug",
+		L"-Qstrip_reflect",
+		L"-Fre", L"reflection",
 	};
 
-	TComPtr<IDxcOperationResult> OperationResult;
+	TComPtr<IDxcResult> OperationResult;
 	HRESULT HR = gDxcCompiler->Compile(
-		pSource.Get(),
-		File.c_str(), Entry.c_str(), Target.c_str(),
+		&Source,
 		Arguments, ArrayCount(Arguments),
-		nullptr, 0,
 		gIncludeHandler.Get(),
-		&OperationResult
+		IID_PPV_ARGS(OperationResult.GetAddressOf())
 	);
 
 	UnmapFile(ShaderMap);
@@ -135,16 +139,14 @@ TComPtr<IDxcBlob> CompileShader(StringView FileName, StringView EntryPoint)
 
 	TComPtr<IDxcBlob> Result;
 	OperationResult->GetResult(&Result);
-	return Result;
-}
-
-TComPtr<ID3D12ShaderReflection> GetReflection(IDxcBlob* Shader)
-{
-	DxcBuffer ShaderBuffer{};
-	ShaderBuffer.Ptr = Shader->GetBufferPointer();
-	ShaderBuffer.Size = Shader->GetBufferSize();
-
-	TComPtr<ID3D12ShaderReflection> Result;
-	gDxcUtils->CreateReflection(&ShaderBuffer, IID_PPV_ARGS(&Result));
+	if (Reflection)
+	{
+		TComPtr<IDxcBlob> Refl;
+		OperationResult->GetOutput(DXC_OUT_REFLECTION, IID_PPV_ARGS(Refl.GetAddressOf()), nullptr);
+		DxcBuffer ReflBlob{};
+		ReflBlob.Ptr = Refl->GetBufferPointer();
+		ReflBlob.Size = Refl->GetBufferSize();
+		gDxcUtils->CreateReflection(&ReflBlob, IID_PPV_ARGS(Reflection));
+	}
 	return Result;
 }

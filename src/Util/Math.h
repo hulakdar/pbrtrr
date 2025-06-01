@@ -19,7 +19,10 @@ T AlignUp(T In, TT AlignmentIn)
 }
 
 template<typename T, typename TT>
-T AlignDown(T In, TT Alignment) { return AlignUp<T>(In + 1 - (T)Alignment, Alignment); }
+T AlignDown(T In, TT Alignment)
+{
+	return AlignUp<T>(In + 1 - (T)Alignment, Alignment);
+}
 
 template<typename T>
 T Clamp(T In, T Min, T Max)
@@ -121,10 +124,10 @@ struct Matrix4
 
 struct Vec4PackShorts
 {
-	u16 x;
-	u16 y;
-	u16 z;
-	u16 w;
+	i16 x;
+	i16 y;
+	i16 z;
+	i16 w;
 
 	Vec4PackShorts() { x = y = z = w = 0; }
 	Vec4PackShorts(Vec4 In) : Vec4PackShorts(In.x, In.y, In.z, In.w) {}
@@ -133,14 +136,22 @@ struct Vec4PackShorts
 
 	Vec4PackShorts(float InX, float InY, float InZ, float InW)
 	{
-		CHECK(InX <= float(UINT16_MAX) && InY <= float(UINT16_MAX) && InZ <= float(UINT16_MAX) && InW <= float(UINT16_MAX));
-		x = u16(InX);
-		y = u16(InY);
-		z = u16(InZ);
-		w = u16(InW);
+		//CHECK(std::max(std::max(InX, InY), std::max(InZ, InW)) <=  1.0f, "");
+		//CHECK(std::min(std::min(InX, InY), std::min(InZ, InW)) >= -1.0f, "");
+		x = u16(InX * INT16_MAX);
+		y = u16(InY * INT16_MAX);
+		z = u16(InZ * INT16_MAX);
+		w = u16(InW * INT16_MAX);
 	}
 
-	operator Vec4() { return Vec4{float(x), float(y), float(z), float(w)}; }
+	operator Vec4() {
+		return Vec4{
+			float(x) * (1.0f / INT16_MAX),
+			float(y) * (1.0f / INT16_MAX),
+			float(z) * (1.0f / INT16_MAX),
+			float(w) * (1.0f / INT16_MAX)
+		};
+	}
 };
 
 struct Vec4PackUnorm
@@ -159,28 +170,7 @@ struct Vec4PackUnorm
 
 	Vec4PackUnorm() { x = y = z = w = 0; }
 
-	Vec4PackUnorm(Vec4 In) : Vec4PackUnorm(In.x, In.y, In.z, In.w) { }
-
-	Vec4PackUnorm(float Xin)
-	{
-		CHECK(Xin >= 0.f && Xin <= 1.f, "This format can only hold normalized values");
-
-		x = y = z = uint32_t(Xin * Max10bit);
-		w = 0;
-	}
-
-	Vec4PackUnorm(float* p)
-	{
-		CHECK(p[0] >= 0.f && p[0] <= 1.f, "This format can only hold normalized values");
-		CHECK(p[1] >= 0.f && p[1] <= 1.f, "This format can only hold normalized values");
-		CHECK(p[2] >= 0.f && p[2] <= 1.f, "This format can only hold normalized values");
-		CHECK(p[3] >= 0.f && p[3] <= 1.f, "This format can only hold normalized values");
-
-		x = uint32_t(p[0] * Max10bit);
-		y = uint32_t(p[1] * Max10bit);
-		z = uint32_t(p[2] * Max10bit);
-		w = uint32_t(p[3] * Max2bit);
-	}
+	Vec4PackUnorm(float* In) : Vec4PackUnorm(In[0], In[1], In[2], In[3]) { }
 
 	Vec4PackUnorm(float Xin, float Yin, float Zin, float Win)
 	{
@@ -194,6 +184,9 @@ struct Vec4PackUnorm
 		z = uint32_t(Zin * Max10bit);
 		w = uint32_t(Win * Max2bit);
 	}
+
+	Vec4PackUnorm(Vec4 In) : Vec4PackUnorm(In.x, In.y, In.z, In.w) { }
+	Vec4PackUnorm(float In) : Vec4PackUnorm(In, In, In, 0) { }
 
 	operator Vec4()
 	{

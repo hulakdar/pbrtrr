@@ -312,7 +312,7 @@ String MemberDefinition(StringView Type, StringView Name, StringView Scopes, Str
 	{
 		NewMember = StringFromFormat(
 			"{[](void* In)->String{ auto* AfterCast = (%.*s %.*s*)In; String Result; for (int i = 0; i < %.*s; ++i) Result += ToString(&AfterCast->%.*s[i]); return Result;},"
-			" [](void* In){ auto* AfterCast = (%.*s %.*s*)In; ImGui::Text(\"%.*s: \"); for (int i = 0; i < %.*s; ++i) {ImGui::SameLine(); ToUI(&AfterCast->%.*s[i]);}},",
+			" [](void* In){ auto* AfterCast = (%.*s %.*s*)In; ImGui::Text(\"%.*s: \"); ImGui::SameLine(); if (ImGui::TreeNodeEx(&AfterCast->%.*s, ImGuiTreeNodeFlags_None, \"Array\")) {for (int i = 0; i < %.*s; ++i) {%s ToUI(&AfterCast->%.*s[i]);} ImGui::TreePop();}},",
 			VIEW_PRINT(Scopes),
 			VIEW_PRINT(TemplateText),
 			VIEW_PRINT(ArrayNum),
@@ -320,7 +320,9 @@ String MemberDefinition(StringView Type, StringView Name, StringView Scopes, Str
 			VIEW_PRINT(Scopes),
 			VIEW_PRINT(TemplateText),
 			VIEW_PRINT(Name),
+			VIEW_PRINT(Name),
 			VIEW_PRINT(ArrayNum),
+			"ImGui::Text(\"[%d]:\", i); ImGui::SameLine();",
 			VIEW_PRINT(Name)
 		);
 	}
@@ -405,17 +407,17 @@ void ParseEnum(CodeGenerator& Generator, StringView EnumName)
 	}
 	EnumsToPrint += "	};\n";
 	EnumsToPrint += StringFromFormat(
-		"\nstatic String ToString(%.*s In)\n"
-		"{\n"
-			"for (int i = 0; i < ArrayCount(%.*s_Table);++i)\n"
-			"{\n"
-				"if ((u32)In == %.*s_Table[i].Value)\n"
-				"{\n"
-					"return String(%.*s_Table[i].Text);\n"
-				"}\n"
-			"}\n"
-			"return \"\";\n"
-		"}\n\n",
+	"\n	static String ToString(%.*s In)\n"
+	"	{\n"
+	"		for (int i = 0; i < ArrayCount(%.*s_Table);++i)\n"
+	"		{\n"
+	"			if ((u32)In == %.*s_Table[i].Value)\n"
+	"			{\n"
+	"				return String(%.*s_Table[i].Text);\n"
+	"			}\n"
+	"		}\n"
+	"		return \"\";\n"
+	"	}\n\n",
 		VIEW_PRINT(Scopes),
 		VIEW_PRINT(EnumName),
 		VIEW_PRINT(EnumName),
@@ -803,17 +805,7 @@ void ParseStruct(CodeGenerator& Generator, StringView StructName, StringView Tem
 	MembersToPrint += StringFromFormat(
 		"	static String ToString(%.*s %.*s* In)\n"
 		"	{\n"
-		"		String Result;\n"
-		"		TypeInfoMember* Info = _%.*s_TypeTable%.*s;\n"
-		"		for (int i = 0; i < %d;++i)\n"
-		"		{\n"
-		"			Result += String(Info[i].MemberName);\n"
-		"			Result += ':';\n"
-		"			Result += ' ';\n"
-		"			Result += Info[i].Stringify((void*)In);\n"
-		"			Result += '\\n';\n"
-		"		}\n"
-		"		return Result;\n"
+		"		return ToString(_%.*s_TypeTable%.*s, %d, In);\n"
 		"	}\n\n",
 		VIEW_PRINT(Scopes),
 		VIEW_PRINT(TemplateText),
@@ -827,41 +819,18 @@ void ParseStruct(CodeGenerator& Generator, StringView StructName, StringView Tem
 		MembersToPrint += StringFromFormat("	template<%.*s>\n", VIEW_PRINT(TemplateParams));
 	}
 
-	if (Members.size() == 1)
 	{
 		MembersToPrint += StringFromFormat(
 			"	static void ToUI(%.*s %.*s* In)\n"
 			"	{\n"
-			"		TypeInfoMember* Info = _%.*s_TypeTable%.*s;\n"
-			"		Info->Imguify(In);\n"
-			"	}\n\n",
-			VIEW_PRINT(Scopes),
-			VIEW_PRINT(TemplateText),
-			VIEW_PRINT(StructName),
-			VIEW_PRINT(TemplateText)
-		);
-	}
-	else
-	{
-		MembersToPrint += StringFromFormat(
-			"	static void ToUI(%.*s %.*s* In)\n"
-			"	{\n"
-			"		TypeInfoMember* Info = _%.*s_TypeTable%.*s;\n"
-			"		if (ImGui::TreeNodeEx((void*)In, ImGuiTreeNodeFlags_None, \"%.*s\"))\n"
-			"		{\n"
-			"			for (int i = 0; i < %d;++i)\n"
-			"			{\n"
-			"				Info[i].Imguify(In);\n"
-			"			}\n"
-			"			ImGui::TreePop();\n"
-			"		}\n"
+			"		ToUI(_%.*s_TypeTable%.*s, %d, In, \"%.*s\");\n"
 			"	}\n\n",
 			VIEW_PRINT(Scopes),
 			VIEW_PRINT(TemplateText),
 			VIEW_PRINT(StructName),
 			VIEW_PRINT(TemplateText),
-			VIEW_PRINT(StructName),
-			(int)Members.size()
+			(int)Members.size(),
+			VIEW_PRINT(StructName)
 		);
 	}
 	fwrite(MembersToPrint.data(), 1, MembersToPrint.size(), Generator.OutputFile);
@@ -1140,7 +1109,7 @@ void ParseHeader(StringView Code, StringView InputFilename, StringView OutputFil
 
 	FILE* OutputFile = fopen(OutputFilename.data(), "w");
 
-	String IncludeString = StringFromFormat("#pragma once\n #include \"Util/TypeInfo.h\"\n#include \"%.*s\"\n", (int)InputFilename.size(), InputFilename.data());
+	String IncludeString = StringFromFormat("#pragma once\n#include \"Util/TypeInfo.h\"\n#include \"%.*s\"\n", (int)InputFilename.size(), InputFilename.data());
 
 	fwrite(IncludeString.data(), 1, IncludeString.size(), OutputFile);
 

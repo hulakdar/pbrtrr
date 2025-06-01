@@ -1,6 +1,6 @@
 #pragma once
 
-#include <tracy/Tracy.hpp>
+#include "../thirdparty/tracy/public/tracy/Tracy.hpp"
 
 #include "Common.h"
 #include "Containers/StringView.h"

@@ -1,6 +1,11 @@
-#include "Containers/Private/String.cpp"
-#include "Util/Private/Util.cpp"
-#include "Util/Private/Debug.cpp"
+#include "../src/Containers/Private/String.cpp"
+#include "../src/Util/Private/Util.cpp"
+#include "../src/Util/Private/Debug.cpp"
 
 #include "../CodeParser/Tokenizer.cpp"
-#include "../CodeParser/main.cpp"
+#include "../CodeParser/CodeParser.cpp"
+
+int main()
+{
+    ParseTheCode();
+}
